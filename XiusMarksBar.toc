@@ -1,0 +1,9 @@
+## Interface: 16001
+## Title: Xius Marks Bar
+## Notes: Compact raid marking bar for World of Warcraft Forever. Click the flag or the star to expand. /xmb
+## Author: Xius
+## Version: 1.0.0
+## SavedVariables: XiusMarksBarDB
+
+Config.lua
+Core.lua
