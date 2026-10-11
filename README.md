@@ -80,7 +80,7 @@ All settings are saved per account in `XiusMarksBarDB`.
 
 ## More From Xius
 
-**[Xius Threat Meter](https://github.com/XiusTV/XiusThreatMeter)**: A clean, lightweight threat meter for World of Warcraft Forever. Shows who is on the enemy's threat table, how much threat each player and pet has, and warns you before you pull aggro.
+**[Xius Threat Meter](https://github.com/XiusTV/XiusThreatMeter)** ([CurseForge](https://www.curseforge.com/wow/addons/xius-threat-meter), awaiting approval): A clean, lightweight threat meter for World of Warcraft Forever. Shows who is on the enemy's threat table, how much threat each player and pet has, and warns you before you pull aggro.
 
 **[Xius XP & Reputation Tracker](https://github.com/XiusTV/XiusXPTracker)** ([CurseForge](https://www.curseforge.com/wow/addons/xius-xp-and-reputation-tracker)): A compact HUD card that replaces the default XP and reputation bars with a single movable panel: level, XP, rested, watched faction, session rates, gold, and time-to-level.
 
