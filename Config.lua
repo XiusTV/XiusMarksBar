@@ -262,7 +262,9 @@ function XMB:CreateOptions()
             return
         end
         XMB.db.scale = newScale
-        XMB:NotifySettingsChanged()
+        if XMB.ApplyScale then
+            XMB:ApplyScale()
+        end
     end)
 
     y = y - 36
