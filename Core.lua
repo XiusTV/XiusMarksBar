@@ -1,6 +1,6 @@
 --[[
     Xius Marks Bar - Core.lua
-    Compact raid marking bar for World of Warcraft Forever.
+    Compact raid marking bar for modern World of Warcraft and World of Warcraft Forever.
     Flag opens world marks, star opens target marks.
     Pull timers, ready check, and role check stay on the bar.
 ]]
@@ -42,39 +42,20 @@ local COLOR = {
     iconAlpha = 0.88,
 }
 
-local MARK_TEXTURES = {}
-for i = 1, 8 do
-    MARK_TEXTURES[i] = "Interface\\TargetingFrame\\UI-RaidTargetingIcon_" .. i
-end
-
-local MARK_NAMES = {
-    "Star",
-    "Circle",
-    "Diamond",
-    "Triangle",
-    "Moon",
-    "Square",
-    "Cross",
-    "Skull",
-}
-
--- World marker index -> raid icon texture (square, triangle, diamond, cross, star, circle, moon, skull).
-local WORLD_ICON = { 6, 4, 3, 7, 1, 2, 5, 8 }
-local WORLD_NAMES = {
-    "Blue Square",
-    "Green Triangle",
-    "Purple Diamond",
-    "Red Cross",
-    "Yellow Star",
-    "Orange Circle",
-    "Silver Moon",
-    "White Skull",
-}
+local IsSecret = XMB.IsSecret
+local IsFiniteNumber = XMB.IsFiniteNumber
+local MARK_TEXTURES = XMB.MARK_TEXTURES
+local MARK_NAMES = XMB.MARK_NAMES
+local WORLD_ICON = XMB.WORLD_ICON
+local WORLD_NAMES = XMB.WORLD_NAMES
 
 local PULL_TIMES = { 5, 10, 20 }
 
 local pullSerial = 0
+local activePullSec = nil
+local activePullEnd = 0
 local layoutQueued = false
+local lastWorldNoticeAt = -10
 
 -- WoW lowercases attribute names before OnAttributeChanged sees them.
 local HOST_SNIPPET = [[
@@ -151,12 +132,16 @@ end
 local fontPath
 
 local function SetFont(fs, size)
-    if not fontPath and GameFontNormal then
-        fontPath = GameFontNormal:GetFont()
+    if not fontPath and GameFontNormal and GameFontNormal.GetFont then
+        local ok, face = pcall(GameFontNormal.GetFont, GameFontNormal)
+        if ok and type(face) == "string" and face ~= "" then
+            fontPath = face
+        end
     end
-    if fontPath then
-        fs:SetFont(fontPath, size, "OUTLINE")
+    if not fontPath then
+        fontPath = "Fonts\\FRIZQT__.TTF"
     end
+    pcall(fs.SetFont, fs, fontPath, size, "OUTLINE")
 end
 
 local function MakeEdges(frame, layer, r, g, b, a)
@@ -192,6 +177,10 @@ end
 local gradientPairs
 
 local function SetVerticalGradient(tex, top, bottom)
+    if not tex.SetGradient or not CreateColor then
+        tex:SetColorTexture(top[1], top[2], top[3], top[4] or 1)
+        return
+    end
     if not gradientPairs then
         gradientPairs = {}
     end
@@ -281,12 +270,12 @@ local function SkinButton(btn)
 end
 
 local function ShowTip(owner, title, line)
-    if not XMB.db or not XMB.db.showTooltips then
+    if not XMB.db or not XMB.db.showTooltips or not GameTooltip then
         return
     end
     local host = XMB.host
     if host then
-        GameTooltip:SetOwner(owner, "ANCHOR_NONE")
+        pcall(GameTooltip.SetOwner, GameTooltip, owner, "ANCHOR_NONE")
         GameTooltip:ClearAllPoints()
         if XMB.growUp then
             GameTooltip:SetPoint("BOTTOMLEFT", host, "TOPLEFT", 0, 4)
@@ -294,7 +283,7 @@ local function ShowTip(owner, title, line)
             GameTooltip:SetPoint("TOPLEFT", host, "BOTTOMLEFT", 0, -4)
         end
     else
-        GameTooltip:SetOwner(owner, "ANCHOR_TOP")
+        pcall(GameTooltip.SetOwner, GameTooltip, owner, "ANCHOR_TOP")
     end
     GameTooltip:SetText(title, COLOR.gold[1], COLOR.gold[2], COLOR.gold[3])
     if line then
@@ -304,7 +293,9 @@ local function ShowTip(owner, title, line)
 end
 
 local function HideTip()
-    GameTooltip:Hide()
+    if GameTooltip then
+        GameTooltip:Hide()
+    end
 end
 
 -- One shared enter/leave pair for every skinned button (avoids dozens of closures).
@@ -360,54 +351,156 @@ local function AddIcon(btn, texture, size)
     return icon
 end
 
-local function Say(msg)
-    local channel
-    if IsInRaid() and (UnitIsGroupLeader("player") or UnitIsGroupAssistant("player")) then
-        channel = "RAID_WARNING"
-    elseif IsInRaid() then
-        channel = "RAID"
-    elseif IsInGroup() then
-        channel = "PARTY"
+local function SafeBool(fn, ...)
+    if type(fn) ~= "function" then
+        return false
     end
-    if channel then
-        local ok = pcall(SendChatMessage, msg, channel)
-        if ok then
-            return
-        end
+    local ok, val = pcall(fn, ...)
+    if not ok or IsSecret(val) then
+        return false
+    end
+    return val and true or false
+end
+
+local function TryChannel(msg, channel)
+    if not channel then
+        return false
+    end
+    local sendFn = (C_ChatInfo and C_ChatInfo.SendChatMessage) or SendChatMessage
+    if type(sendFn) ~= "function" then
+        return false
+    end
+    local ok, sent = pcall(sendFn, msg, channel)
+    if not ok then
+        return false
+    end
+    -- A false return means that channel refused the message. nil means it was sent.
+    return sent ~= false
+end
+
+local function Say(msg)
+    local instCat = LE_PARTY_CATEGORY_INSTANCE or 2
+    local homeCat = LE_PARTY_CATEGORY_HOME or 1
+    local inInstanceGroup = SafeBool(IsInGroup, instCat)
+    local inHomeRaid = SafeBool(IsInRaid, homeCat)
+    local inAnyRaid = SafeBool(IsInRaid)
+    local inHomeGroup = SafeBool(IsInGroup, homeCat)
+    local inAnyGroup = SafeBool(IsInGroup)
+    local leader = SafeBool(UnitIsGroupLeader, "player") or SafeBool(UnitIsGroupAssistant, "player")
+
+    if inAnyRaid and leader and TryChannel(msg, "RAID_WARNING") then
+        return
+    end
+    if inInstanceGroup and TryChannel(msg, "INSTANCE_CHAT") then
+        return
+    end
+    if inHomeRaid and TryChannel(msg, "RAID") then
+        return
+    end
+    if inHomeGroup and TryChannel(msg, "PARTY") then
+        return
+    end
+    if not inInstanceGroup and inAnyRaid and TryChannel(msg, "RAID") then
+        return
+    end
+    if not inInstanceGroup and inAnyGroup and TryChannel(msg, "PARTY") then
+        return
     end
     XMB:Print(msg)
 end
 
+function XMB:NotifyWorldMarkerRequirement()
+    local now = (GetTime and GetTime()) or 0
+    if now - lastWorldNoticeAt < 3 then
+        return
+    end
+    if IsInGroup and not SafeBool(IsInGroup) then
+        lastWorldNoticeAt = now
+        self:Print("World markers require being in a party or raid.")
+        return
+    end
+    if IsInRaid and SafeBool(IsInRaid) then
+        local canMark = SafeBool(UnitIsGroupLeader, "player") or SafeBool(UnitIsGroupAssistant, "player")
+        if not canMark then
+            lastWorldNoticeAt = now
+            self:Print("World markers in a raid require leader or assistant permission.")
+        end
+    end
+end
+
 local pullTicker
 
-local function DoPull(seconds)
+local function CancelPull()
+    pullSerial = pullSerial + 1
+    local hadTicker = pullTicker ~= nil
+    if pullTicker then
+        pullTicker:Cancel()
+        pullTicker = nil
+    end
+    activePullSec = nil
+    activePullEnd = 0
+    if C_PartyInfo and C_PartyInfo.DoCountdown then
+        local ok = pcall(C_PartyInfo.DoCountdown, 0)
+        if ok and not hadTicker then
+            return
+        end
+    end
+    if hadTicker then
+        Say("Pull cancelled!")
+    end
+end
+
+local function DoPull(seconds, button)
+    local now = (GetTime and GetTime()) or 0
+    local isRunning = (pullTicker ~= nil) or (activePullEnd > now)
+    if button == "RightButton" or (isRunning and activePullSec == seconds) then
+        if isRunning then
+            CancelPull()
+        end
+        return
+    end
+
     pullSerial = pullSerial + 1
     local serial = pullSerial
     if pullTicker then
         pullTicker:Cancel()
         pullTicker = nil
     end
-    if C_PartyInfo and C_PartyInfo.DoCountdown then
-        local ok = pcall(C_PartyInfo.DoCountdown, seconds)
-        if ok then
+    activePullSec = seconds
+    activePullEnd = now + seconds
+
+    local canBlizzCountdown = C_PartyInfo and type(C_PartyInfo.DoCountdown) == "function"
+    if canBlizzCountdown and SafeBool(IsInRaid) then
+        if not SafeBool(UnitIsGroupLeader, "player") and not SafeBool(UnitIsGroupAssistant, "player") then
+            canBlizzCountdown = false
+        end
+    end
+    if canBlizzCountdown then
+        local ok, started = pcall(C_PartyInfo.DoCountdown, seconds)
+        if ok and started ~= false then
             return
         end
     end
+
     Say(string.format("Pull in %d", seconds))
-    if not C_Timer.NewTicker then
-        for step = 1, seconds do
-            local stepElapsed = step
-            C_Timer.After(stepElapsed, function()
-                if serial ~= pullSerial then
-                    return
-                end
-                local left = seconds - stepElapsed
-                if left <= 0 then
-                    Say("GO!")
-                else
-                    Say(tostring(left))
-                end
-            end)
+    if not C_Timer or not C_Timer.NewTicker then
+        if C_Timer and C_Timer.After then
+            for step = 1, seconds do
+                local stepElapsed = step
+                C_Timer.After(stepElapsed, function()
+                    if serial ~= pullSerial then
+                        return
+                    end
+                    local left = seconds - stepElapsed
+                    if left <= 0 then
+                        activePullSec = nil
+                        activePullEnd = 0
+                        Say("GO!")
+                    else
+                        Say(tostring(left))
+                    end
+                end)
+            end
         end
         return
     end
@@ -426,6 +519,8 @@ local function DoPull(seconds)
             Say(tostring(left))
             return
         end
+        activePullSec = nil
+        activePullEnd = 0
         Say("GO!")
         if pullTicker == ticker then
             pullTicker = nil
@@ -443,37 +538,62 @@ function XMB:ResolveGrowUp()
     if mode == "DOWN" then
         return false
     end
-    if db and db.headerBottom and db.headerTop then
+    if db and IsFiniteNumber(db.headerBottom) and IsFiniteNumber(db.headerTop) then
         local mid = (db.headerBottom + db.headerTop) / 2
-        return mid < (UIParent:GetHeight() * 0.5)
+        local uiH = UIParent:GetHeight()
+        if IsFiniteNumber(uiH) and uiH > 0 then
+            return mid < (uiH * 0.5)
+        end
     end
     return true
 end
 
 function XMB:EnsurePosition()
     local db, host = self.db, self.host
-    if db.headerLeft and db.headerBottom and db.headerTop then
+    if IsFiniteNumber(db.headerLeft) and IsFiniteNumber(db.headerBottom) and IsFiniteNumber(db.headerTop) then
         return
     end
     local s = host:GetScale() or 1
+    if not IsFiniteNumber(s) or s <= 0 then
+        s = 1
+    end
     local w = (host:GetWidth() or 300) * s
-    db.headerLeft = math.floor((UIParent:GetWidth() - w) / 2 + 0.5)
+    local uiW = UIParent:GetWidth() or 1024
+    db.headerLeft = math.floor((uiW - w) / 2 + 0.5)
     db.headerBottom = 200
     db.headerTop = db.headerBottom + COLLAPSED_H * s
 end
 
-local function SnapToPixel(value, scale, pixel)
-    return math.floor((value / scale) / pixel + 0.5) * pixel
+local function SafeScale(frame)
+    local scale = frame:GetEffectiveScale()
+    if not IsFiniteNumber(scale) or scale <= 0 then
+        scale = frame:GetScale() or 1
+    end
+    if not IsFiniteNumber(scale) or scale <= 0 then
+        return 1
+    end
+    return scale
 end
 
-local function ScreenPixel(host)
-    local pixel = 1
+-- GetLeft is in the frame's effective scale. Saved coordinates are stored in UIParent space.
+local function ToParentCoord(host, value)
+    return value * SafeScale(host) / SafeScale(UIParent)
+end
+
+local function ParentPixel()
     local _, physH = GetPhysicalScreenSize()
-    local eff = host:GetEffectiveScale()
-    if physH and physH > 0 and eff and eff > 0 then
-        pixel = 768 / physH / eff
+    local eff = SafeScale(UIParent)
+    if IsFiniteNumber(physH) and physH > 0 then
+        return 768 / physH / eff
     end
-    return pixel
+    return 1
+end
+
+local function SnapToPixel(value, pixel)
+    if not IsFiniteNumber(value) or not IsFiniteNumber(pixel) or pixel <= 0 then
+        return value or 0
+    end
+    return math.floor(value / pixel + 0.5) * pixel
 end
 
 function XMB:RestorePosition()
@@ -482,21 +602,17 @@ function XMB:RestorePosition()
         return
     end
     self:EnsurePosition()
-    local scale = host:GetScale() or 1
-    local pixel = ScreenPixel(host)
+    local s = host:GetScale() or 1
+    if not IsFiniteNumber(s) or s <= 0 then
+        s = 1
+    end
+    local pixel = ParentPixel()
+    local x = SnapToPixel(db.headerLeft, pixel) / s
     host:ClearAllPoints()
     if self.growUp then
-        host:SetPoint(
-            "BOTTOMLEFT", UIParent, "BOTTOMLEFT",
-            SnapToPixel(db.headerLeft, scale, pixel),
-            SnapToPixel(db.headerBottom, scale, pixel)
-        )
+        host:SetPoint("BOTTOMLEFT", UIParent, "BOTTOMLEFT", x, SnapToPixel(db.headerBottom, pixel) / s)
     else
-        host:SetPoint(
-            "TOPLEFT", UIParent, "BOTTOMLEFT",
-            SnapToPixel(db.headerLeft, scale, pixel),
-            SnapToPixel(db.headerTop, scale, pixel)
-        )
+        host:SetPoint("TOPLEFT", UIParent, "BOTTOMLEFT", x, SnapToPixel(db.headerTop, pixel) / s)
     end
     self.positionApplied = true
     self.positionDirty = nil
@@ -507,18 +623,22 @@ function XMB:SavePosition()
     if not db or not host then
         return
     end
-    local s = host:GetScale() or 1
     local left, bottom, top = host:GetLeft(), host:GetBottom(), host:GetTop()
-    if not left or not bottom or not top then
+    if not IsFiniteNumber(left) or not IsFiniteNumber(bottom) or not IsFiniteNumber(top) then
         return
     end
-    db.headerLeft = left * s
+    local s = host:GetScale() or 1
+    if not IsFiniteNumber(s) or s <= 0 then
+        s = 1
+    end
+    local span = COLLAPSED_H * s
+    db.headerLeft = ToParentCoord(host, left)
     if self.growUp then
-        db.headerBottom = bottom * s
-        db.headerTop = db.headerBottom + COLLAPSED_H * s
+        db.headerBottom = ToParentCoord(host, bottom)
+        db.headerTop = db.headerBottom + span
     else
-        db.headerTop = top * s
-        db.headerBottom = db.headerTop - COLLAPSED_H * s
+        db.headerTop = ToParentCoord(host, top)
+        db.headerBottom = db.headerTop - span
     end
 end
 
@@ -596,7 +716,7 @@ function XMB:Layout()
         return
     end
     local host, db = self.host, self.db
-    if not host or not db then
+    if not host or not db or not self.pulls or not self.ready or not self.role or not self.grip then
         return
     end
 
@@ -604,28 +724,66 @@ function XMB:Layout()
     local growChanged = (self.growUp ~= growUp)
     self.growUp = growUp
 
+    local showFlag = db.enableWorldMarks ~= false
+    local showStar = db.enableTargetMarks ~= false
+    local function PullOn(sec)
+        local value = db["showPull" .. sec]
+        if value == nil then
+            return db.showCountdown ~= false
+        end
+        return value and true or false
+    end
+    local pull5 = PullOn(5)
+    local pull10 = PullOn(10)
+    local pull20 = PullOn(20)
+
     local headerSig = (growUp and 1 or 0)
-        + (db.showCountdown and 2 or 0)
-        + (db.showReady and 4 or 0)
-        + (db.showRole and 8 or 0)
+        + (pull5 and 2 or 0)
+        + (pull10 and 4 or 0)
+        + (pull20 and 8 or 0)
+        + (db.showReady and 16 or 0)
+        + (db.showRole and 32 or 0)
+        + (showStar and 64 or 0)
+        + (showFlag and 128 or 0)
 
     if headerSig ~= self.headerSig then
-        local x = PAD
-        self:PlaceHeader(self.flag, x, BTN)
-        x = x + BTN + GAP
-        self:PlaceHeader(self.star, x, BTN)
-        x = x + BTN
+        local panel = host:GetAttribute("panel") or 0
+        if (panel == 1 and not showStar) or (panel == 2 and not showFlag) then
+            host:SetAttribute("panel", 0)
+            self:UpdateActive()
+        end
 
-        local anyUtil = db.showCountdown or db.showReady or db.showRole
-        if anyUtil then
+        self.flag:SetShown(showFlag)
+        self.star:SetShown(showStar)
+
+        local x = PAD
+        local placedMark = false
+        if showFlag then
+            self:PlaceHeader(self.flag, x, BTN)
+            x = x + BTN
+            placedMark = true
+        end
+        if showStar then
+            if placedMark then
+                x = x + GAP
+            end
+            self:PlaceHeader(self.star, x, BTN)
+            x = x + BTN
+            placedMark = true
+        end
+
+        local anyUtil = pull5 or pull10 or pull20 or db.showReady or db.showRole
+        if anyUtil and placedMark then
             x = x + GROUP_GAP
         end
 
         local placed = false
         for i = 1, #self.pulls do
             local btn = self.pulls[i]
-            btn:SetShown(db.showCountdown and true or false)
-            if db.showCountdown then
+            local sec = btn.seconds or PULL_TIMES[i]
+            local on = (sec == 5 and pull5) or (sec == 10 and pull10) or (sec == 20 and pull20)
+            btn:SetShown(on and true or false)
+            if on then
                 if placed then
                     x = x + GAP
                 end
@@ -703,6 +861,9 @@ function XMB:ApplyScale()
         return
     end
     local scale = (self.db and self.db.scale) or 1
+    if not IsFiniteNumber(scale) or scale < 0.6 or scale > 1.6 then
+        scale = 1
+    end
     local current = self.host:GetScale() or 1
     if math.abs(current - scale) < 0.001 then
         return
@@ -738,6 +899,10 @@ function XMB:ApplySettings()
     if not self.host then
         return
     end
+    if self.db and not self.db.showTooltips then
+        HideTip()
+    end
+    self:UpdateGrip()
     if InCombatLockdown() then
         self.pendingLayout = true
         self:Print("Saved. The bar will update when combat ends.")
@@ -804,8 +969,11 @@ function XMB:StopMove()
         return
     end
     self.moving = false
-    self.host:StopMovingOrSizing()
-    self.host:SetUserPlaced(false)
+    local host = self.host
+    pcall(host.StopMovingOrSizing, host)
+    if not InCombatLockdown() then
+        pcall(host.SetUserPlaced, host, false)
+    end
     HideTip()
     self:SavePosition()
     self.positionDirty = true
@@ -849,8 +1017,8 @@ if button == "RightButton" then
   return
 end
 ]] .. TOGGLE_WORLD)
-    -- HookScript keeps SecureHandlerClickTemplate's OnClick intact.
-    flag:HookScript("OnClick", function(_, button)
+    -- OnMouseUp stays off the secure OnClick script, so combat toggles stay protected.
+    flag:SetScript("OnMouseUp", function(_, button)
         if button == "RightButton" then
             XMB:OpenOptions()
         end
@@ -867,7 +1035,7 @@ if button == "RightButton" then
   return
 end
 ]] .. TOGGLE_TARGET)
-    star:HookScript("OnClick", function(_, button)
+    star:SetScript("OnMouseUp", function(_, button)
         if button == "RightButton" then
             XMB:OpenOptions()
         end
@@ -880,21 +1048,25 @@ end
         local sec = PULL_TIMES[i]
         local btn = MakeButton(host, nil, nil, NUM_W)
         AddLabel(btn, tostring(sec), COLOR.text)
-        btn:RegisterForClicks("LeftButtonUp")
-        btn:SetScript("OnClick", function()
-            DoPull(sec)
+        btn:RegisterForClicks("LeftButtonUp", "RightButtonUp")
+        btn:SetScript("OnClick", function(_, button)
+            DoPull(sec, button)
         end)
-        BindHover(btn, "Pull in " .. sec .. " seconds", "Starts a countdown for the group.")
+        btn.seconds = sec
+        BindHover(btn, "Pull in " .. sec .. " seconds", "Left-click starts a countdown. Click again or right-click to cancel.")
         self.pulls[#self.pulls + 1] = btn
     end
 
     local ready = MakeButton(host, "XiusMB_Ready", "SecureActionButtonTemplate", RC_W)
     AddLabel(ready, "RC", COLOR.good)
-    ready:RegisterForClicks("LeftButtonUp", "LeftButtonDown")
+    ready:RegisterForClicks("AnyUp", "AnyDown")
+    ready:SetAttribute("useOnKeyDown", false)
     ready:SetAttribute("type", "macro")
     ready:SetAttribute("macrotext", "/readycheck")
     ready:SetAttribute("type1", "macro")
+    ready:SetAttribute("*type1", "macro")
     ready:SetAttribute("macrotext1", "/readycheck")
+    ready:SetAttribute("*macrotext1", "/readycheck")
     BindHover(ready, "Ready check", "Asks the group if they are ready. Leader or assistant only.")
     self.ready = ready
 
@@ -902,9 +1074,16 @@ end
     AddLabel(role, "R", COLOR.role)
     role:RegisterForClicks("LeftButtonUp")
     role:SetScript("OnClick", function()
-        if InitiateRolePoll then
-            pcall(InitiateRolePoll)
-        else
+        if IsInGroup and not SafeBool(IsInGroup) then
+            XMB:Print("Join a party or raid to start a role check.")
+            return
+        end
+        if not InitiateRolePoll then
+            XMB:Print("Role check is not available right now.")
+            return
+        end
+        local ok = pcall(InitiateRolePoll)
+        if not ok then
             XMB:Print("Role check is not available right now.")
         end
     end)
@@ -928,6 +1107,11 @@ end
     grip:SetScript("OnDragStop", function()
         XMB:StopMove()
     end)
+    grip:SetScript("OnHide", function()
+        if XMB.moving then
+            XMB:StopMove()
+        end
+    end)
     grip:SetScript("OnMouseUp", function(_, button)
         if button == "RightButton" then
             XMB:OpenOptions()
@@ -935,7 +1119,7 @@ end
     end)
     grip:SetScript("OnEnter", function(self)
         if XMB.db and XMB.db.isLocked then
-            ShowTip(self, "Locked", "Unlock with /xmb unlock or in the options.")
+            ShowTip(self, "Locked", "Unlock the bar from /xmb.")
         else
             ShowTip(self, "Move", "Drag to move the bar. Right-click for options.")
             self.paintLocked = nil
@@ -973,49 +1157,86 @@ end
         btn:SetPoint("LEFT", row, "LEFT", (index - 1) * (BTN + GAP), 0)
     end
 
-    -- Target marks must use SecureActionButton macros: SetRaidTarget() is protected
-    -- on this client. No empty [] fallback (avoids marking the wrong unit).
-    -- No pressAndHoldAction (avoids down+up double fire).
-    local clearTargetMacro = "/tm [@target,exists] 0"
+    -- SetRaidTarget is protected. Left click toggles that icon. Right click and the clear button always remove it.
+    local function ArmRaidTarget(btn, marker, clearOnRight)
+        btn:RegisterForClicks("AnyUp", "AnyDown")
+        btn:SetAttribute("useOnKeyDown", false)
+        btn:SetAttribute("checkselfcast", false)
+        btn:SetAttribute("checkfocuscast", false)
+        btn:SetAttribute("type", "raidtarget")
+        btn:SetAttribute("type1", "raidtarget")
+        btn:SetAttribute("*type1", "raidtarget")
+        btn:SetAttribute("unit", "target")
+        btn:SetAttribute("unit1", "target")
+        btn:SetAttribute("*unit1", "target")
+        local action = marker == 0 and "clear" or "toggle"
+        btn:SetAttribute("marker", marker)
+        btn:SetAttribute("marker1", marker)
+        btn:SetAttribute("*marker1", marker)
+        btn:SetAttribute("action", action)
+        btn:SetAttribute("action1", action)
+        btn:SetAttribute("*action1", action)
+        if clearOnRight then
+            btn:SetAttribute("type2", "raidtarget")
+            btn:SetAttribute("*type2", "raidtarget")
+            btn:SetAttribute("unit2", "target")
+            btn:SetAttribute("*unit2", "target")
+            btn:SetAttribute("marker2", 0)
+            btn:SetAttribute("*marker2", 0)
+            btn:SetAttribute("action2", "clear")
+            btn:SetAttribute("*action2", "clear")
+        end
+    end
+
     for i = 1, 8 do
         local btn = MakeButton(targetRow, "XiusMB_TM" .. i, "SecureActionButtonTemplate")
-        local macro = "/tm [@target,exists,nodead] " .. i
-        btn:RegisterForClicks("AnyUp", "AnyDown")
-        btn:SetAttribute("type", "macro")
-        btn:SetAttribute("macrotext", macro)
-        btn:SetAttribute("type1", "macro")
-        btn:SetAttribute("macrotext1", macro)
-        btn:SetAttribute("type2", "macro")
-        btn:SetAttribute("macrotext2", clearTargetMacro)
+        ArmRaidTarget(btn, i, true)
         AddIcon(btn, MARK_TEXTURES[i])
         PlaceInRow(targetRow, btn, i)
-        BindHover(btn, MARK_NAMES[i], "Left click marks your target. Right click clears it.")
+        BindHover(btn, MARK_NAMES[i], "Left click marks your target. Click the same mark again to remove it. Right click clears it.")
     end
 
     local clearTarget = MakeButton(targetRow, "XiusMB_TClear", "SecureActionButtonTemplate")
-    clearTarget:RegisterForClicks("AnyUp", "AnyDown")
-    clearTarget:SetAttribute("type", "macro")
-    clearTarget:SetAttribute("macrotext", clearTargetMacro)
-    clearTarget:SetAttribute("type1", "macro")
-    clearTarget:SetAttribute("macrotext1", clearTargetMacro)
+    ArmRaidTarget(clearTarget, 0, false)
     AddIcon(clearTarget, "Interface\\Buttons\\UI-GroupLoot-Pass-Up")
     PlaceInRow(targetRow, clearTarget, 9)
     BindHover(clearTarget, "Clear target mark", "Removes the mark from your current target.")
 
-    -- World marks stay secure. No pressAndHoldAction (that fires on down and up).
-    -- Left toggles the flare; right clears that flare only.
-    for i = 1, 8 do
-        local btn = MakeButton(worldRow, "XiusMB_WM" .. i, "SecureActionButtonTemplate")
+    -- World marks stay on the secure worldmarker action. Left toggles, right clears that flare.
+    local function ArmWorldMarker(btn, marker, clearOnRight)
         btn:RegisterForClicks("AnyUp", "AnyDown")
+        btn:SetAttribute("useOnKeyDown", false)
+        btn:SetAttribute("checkselfcast", false)
+        btn:SetAttribute("checkfocuscast", false)
         btn:SetAttribute("type", "worldmarker")
         btn:SetAttribute("type1", "worldmarker")
-        btn:SetAttribute("type2", "worldmarker")
-        btn:SetAttribute("marker", i)
-        btn:SetAttribute("marker1", i)
-        btn:SetAttribute("marker2", i)
-        btn:SetAttribute("action", "toggle")
-        btn:SetAttribute("action1", "toggle")
-        btn:SetAttribute("action2", "clear")
+        btn:SetAttribute("*type1", "worldmarker")
+        if marker and marker > 0 then
+            btn:SetAttribute("marker", marker)
+            btn:SetAttribute("marker1", marker)
+            btn:SetAttribute("*marker1", marker)
+            btn:SetAttribute("action", "toggle")
+            btn:SetAttribute("action1", "toggle")
+            btn:SetAttribute("*action1", "toggle")
+            if clearOnRight then
+                btn:SetAttribute("type2", "worldmarker")
+                btn:SetAttribute("*type2", "worldmarker")
+                btn:SetAttribute("marker2", marker)
+                btn:SetAttribute("*marker2", marker)
+                btn:SetAttribute("action2", "clear")
+                btn:SetAttribute("*action2", "clear")
+            end
+            btn.xmbWorldMarker = marker
+        else
+            btn:SetAttribute("action", "clear")
+            btn:SetAttribute("action1", "clear")
+            btn:SetAttribute("*action1", "clear")
+        end
+    end
+
+    for i = 1, 8 do
+        local btn = MakeButton(worldRow, "XiusMB_WM" .. i, "SecureActionButtonTemplate")
+        ArmWorldMarker(btn, i, true)
         AddIcon(btn, MARK_TEXTURES[WORLD_ICON[i]])
         local flare = btn:CreateTexture(nil, "OVERLAY")
         flare:SetTexture("Interface\\RaidFrame\\Raid-WorldPing")
@@ -1026,14 +1247,33 @@ end
     end
 
     local clearWorld = MakeButton(worldRow, "XiusMB_WClear", "SecureActionButtonTemplate")
-    clearWorld:RegisterForClicks("AnyUp", "AnyDown")
-    clearWorld:SetAttribute("type", "worldmarker")
-    clearWorld:SetAttribute("type1", "worldmarker")
-    clearWorld:SetAttribute("action", "clear")
-    clearWorld:SetAttribute("action1", "clear")
+    ArmWorldMarker(clearWorld, 0, false)
     AddIcon(clearWorld, "Interface\\Buttons\\UI-GroupLoot-Pass-Up")
     PlaceInRow(worldRow, clearWorld, 9)
     BindHover(clearWorld, "Clear world marks", "Removes every world marker.")
+
+    if not self.keybindButtonsCreated then
+        self.keybindButtonsCreated = true
+        local function MakeKeyButton(name)
+            local btn = CreateFrame("Button", name, UIParent, "SecureActionButtonTemplate")
+            btn:SetSize(1, 1)
+            btn:SetPoint("TOPLEFT", UIParent, "TOPLEFT", 0, 0)
+            btn:SetAlpha(0)
+            btn:EnableMouse(false)
+            btn:Show()
+            return btn
+        end
+        for i = 1, 8 do
+            local tBtn = MakeKeyButton("XiusMB_Key_TM" .. i)
+            ArmRaidTarget(tBtn, i, false)
+            local wBtn = MakeKeyButton("XiusMB_Key_WM" .. i)
+            ArmWorldMarker(wBtn, i, false)
+        end
+        local tClearKey = MakeKeyButton("XiusMB_Key_TClear")
+        ArmRaidTarget(tClearKey, 0, false)
+        local wClearKey = MakeKeyButton("XiusMB_Key_WClear")
+        ArmWorldMarker(wClearKey, 0, false)
+    end
 
     host:SetFrameRef("trow", targetRow)
     host:SetFrameRef("wrow", worldRow)
@@ -1043,6 +1283,7 @@ end
     host:SetAttribute("rowh", BTN)
     host:SetAttribute("rowgap", ROW_GAP)
     host:SetAttribute("growup", self.growUp and 1 or 0)
+    host:SetAttribute("_onattributechanged", HOST_SNIPPET)
     local panel = 0
     if db.showTarget then
         panel = 1
@@ -1050,7 +1291,6 @@ end
         panel = 2
     end
     host:SetAttribute("panel", panel)
-    host:SetAttribute("_onattributechanged", HOST_SNIPPET)
 
     self:ApplyScale()
     self:ApplyVisibility()
@@ -1058,33 +1298,76 @@ end
 end
 
 local eventFrame = CreateFrame("Frame")
+local LOADED_TEXT = "Loaded. Click the flag for world marks, the star for target marks. /xmb for options."
+
+local function CreateBar()
+    if XMB.host then
+        XMB.pendingCreate = nil
+        return "ready"
+    end
+    if XMB.barFailed then
+        return "failed"
+    end
+    if InCombatLockdown() then
+        XMB.pendingCreate = true
+        return "combat"
+    end
+    XMB.pendingCreate = nil
+    local created, err = pcall(function()
+        XMB:CreateUI()
+    end)
+    if not created then
+        XMB.barFailed = true
+        XMB:Print("Could not create the bar. " .. tostring(err))
+        return "failed"
+    end
+    return "ready"
+end
+
 eventFrame:RegisterEvent("ADDON_LOADED")
 eventFrame:RegisterEvent("PLAYER_ENTERING_WORLD")
+eventFrame:RegisterEvent("PLAYER_REGEN_DISABLED")
 eventFrame:RegisterEvent("PLAYER_REGEN_ENABLED")
 eventFrame:RegisterEvent("UI_SCALE_CHANGED")
 eventFrame:SetScript("OnEvent", function(_, event, name)
     if event == "ADDON_LOADED" and name == ADDON then
         eventFrame:UnregisterEvent("ADDON_LOADED")
         XMB:InitDB()
-        local created, err = pcall(function()
-            XMB:CreateUI()
+        local optionsOk, optionsErr = pcall(function()
             XMB:CreateOptions()
         end)
-        if not created then
-            XMB:Print("Could not create the bar. " .. tostring(err))
-            return
+        if not optionsOk then
+            XMB:Print("Could not create options. " .. tostring(optionsErr))
         end
-        XMB:Print("Loaded. Click the flag for world marks, the star for target marks. /xmb for options.")
+        local state = CreateBar()
+        if state == "combat" then
+            XMB:Print("Loaded. The bar will appear when combat ends.")
+        elseif state == "ready" then
+            XMB:Print(LOADED_TEXT)
+        end
     elseif event == "PLAYER_ENTERING_WORLD" or event == "UI_SCALE_CHANGED" then
         if not XMB.host then
             return
         end
         XMB.positionDirty = true
         XMB:RequestLayout()
-    elseif event == "PLAYER_REGEN_ENABLED" and XMB.pendingLayout then
-        XMB.pendingLayout = nil
-        XMB:ApplyScale()
-        XMB:ApplyVisibility()
-        XMB:Layout()
+    elseif event == "PLAYER_REGEN_DISABLED" then
+        if XMB.moving then
+            XMB:StopMove()
+        end
+    elseif event == "PLAYER_REGEN_ENABLED" then
+        if XMB.pendingCreate then
+            local hadHost = XMB.host and true or false
+            local state = CreateBar()
+            if state == "ready" and not hadHost then
+                XMB:Print(LOADED_TEXT)
+            end
+        end
+        if XMB.pendingLayout and XMB.host then
+            XMB.pendingLayout = nil
+            XMB:ApplyScale()
+            XMB:ApplyVisibility()
+            XMB:Layout()
+        end
     end
 end)

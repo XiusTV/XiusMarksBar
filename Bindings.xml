@@ -1,0 +1,22 @@
+<Bindings>
+  <Binding name="CLICK XiusMB_FlywheelToggle:LeftButton" header="XIUSMARKSBAR" category="ADDONS" />
+  <Binding name="CLICK XiusMB_FlywheelWorldToggle:LeftButton" category="ADDONS" />
+  <Binding name="CLICK XiusMB_Key_TM8:LeftButton" category="ADDONS" />
+  <Binding name="CLICK XiusMB_Key_TM7:LeftButton" category="ADDONS" />
+  <Binding name="CLICK XiusMB_Key_TM6:LeftButton" category="ADDONS" />
+  <Binding name="CLICK XiusMB_Key_TM5:LeftButton" category="ADDONS" />
+  <Binding name="CLICK XiusMB_Key_TM4:LeftButton" category="ADDONS" />
+  <Binding name="CLICK XiusMB_Key_TM3:LeftButton" category="ADDONS" />
+  <Binding name="CLICK XiusMB_Key_TM2:LeftButton" category="ADDONS" />
+  <Binding name="CLICK XiusMB_Key_TM1:LeftButton" category="ADDONS" />
+  <Binding name="CLICK XiusMB_Key_TClear:LeftButton" category="ADDONS" />
+  <Binding name="CLICK XiusMB_Key_WM1:LeftButton" category="ADDONS" />
+  <Binding name="CLICK XiusMB_Key_WM2:LeftButton" category="ADDONS" />
+  <Binding name="CLICK XiusMB_Key_WM3:LeftButton" category="ADDONS" />
+  <Binding name="CLICK XiusMB_Key_WM4:LeftButton" category="ADDONS" />
+  <Binding name="CLICK XiusMB_Key_WM5:LeftButton" category="ADDONS" />
+  <Binding name="CLICK XiusMB_Key_WM6:LeftButton" category="ADDONS" />
+  <Binding name="CLICK XiusMB_Key_WM7:LeftButton" category="ADDONS" />
+  <Binding name="CLICK XiusMB_Key_WM8:LeftButton" category="ADDONS" />
+  <Binding name="CLICK XiusMB_Key_WClear:LeftButton" category="ADDONS" />
+</Bindings>
