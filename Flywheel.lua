@@ -848,12 +848,41 @@ local function SafeFlushFlywheelClick()
     pcall(FlushFlywheelClick)
 end
 
+local function KeyIsDown(fn)
+    if type(fn) ~= "function" then
+        return false
+    end
+    local ok, down = pcall(fn)
+    if not ok or IsSecret(down) then
+        return false
+    end
+    return down and true or false
+end
+
+-- NONE is a plain double-click. SHIFT, ALT, and CTRL require that key alone.
+local function FlywheelModifierMatches(db)
+    local mode = db and db.flywheelModifier or "NONE"
+    local shift = KeyIsDown(IsShiftKeyDown)
+    local alt = KeyIsDown(IsAltKeyDown)
+    local ctrl = KeyIsDown(IsControlKeyDown)
+    if mode == "SHIFT" then
+        return shift and not alt and not ctrl
+    end
+    if mode == "ALT" then
+        return alt and not shift and not ctrl
+    end
+    if mode == "CTRL" then
+        return ctrl and not shift and not alt
+    end
+    return not shift and not alt and not ctrl
+end
+
 function XMB:NoteFlywheelClick(kind, unit)
     local db = self.db
     if not db or InCombatLockdown() then
         return
     end
-    if IsShiftKeyDown() or IsAltKeyDown() or IsControlKeyDown() then
+    if not FlywheelModifierMatches(db) then
         return
     end
     if CallTruthy(IsMouselooking) or CallTruthy(SpellIsTargeting) then

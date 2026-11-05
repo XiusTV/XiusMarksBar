@@ -3,7 +3,7 @@
 ## Title: Xius Marks Bar
 ## Notes: Compact raid marking bar for modern World of Warcraft and World of Warcraft Forever. Click the flag or the star to expand. /xmb
 ## Author: Xius
-## Version: 1.3.6
+## Version: 1.3.7
 ## IconTexture: Interface\TargetingFrame\UI-RaidTargetingIcon_1
 ## SavedVariables: XiusMarksBarDB
 ## X-Curse-Project-ID: 1740229

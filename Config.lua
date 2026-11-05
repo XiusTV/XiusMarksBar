@@ -8,7 +8,7 @@ _G.XiusMarksBar = XMB
 
 XMB.ADDON = ADDON
 XMB.TITLE = "Xius Marks Bar"
-XMB.VERSION = "1.3.6"
+XMB.VERSION = "1.3.7"
 XMB.DB_VERSION = 1
 
 local function IsSecret(value)
@@ -93,6 +93,7 @@ XMB.defaults = {
     showWorld = false,
     flywheelUnits = true,
     flywheelWorld = true,
+    flywheelModifier = "NONE",
     growthDirection = "AUTO",
     scale = 1,
 }
@@ -215,6 +216,14 @@ local GROWTH_LABELS = {
 }
 local GROWTH_ORDER = { "AUTO", "UP", "DOWN" }
 
+local FLYWHEEL_MOD_LABELS = {
+    NONE = "Double-click",
+    SHIFT = "Shift + double-click",
+    ALT = "Alt + double-click",
+    CTRL = "Ctrl + double-click",
+}
+local FLYWHEEL_MOD_ORDER = { "NONE", "SHIFT", "ALT", "CTRL" }
+
 local function CopyDefaults(src, dst)
     if type(dst) ~= "table" then
         dst = {}
@@ -257,6 +266,9 @@ function XMB:InitDB()
     if db.growthDirection ~= "UP" and db.growthDirection ~= "DOWN" then
         db.growthDirection = "AUTO"
     end
+    if db.flywheelModifier ~= "SHIFT" and db.flywheelModifier ~= "ALT" and db.flywheelModifier ~= "CTRL" then
+        db.flywheelModifier = "NONE"
+    end
     if not IsFiniteNumber(db.scale) then
         db.scale = 1
     end
@@ -288,6 +300,7 @@ end
 local FLYWHEEL_KEYS = {
     flywheelUnits = true,
     flywheelWorld = true,
+    flywheelModifier = true,
 }
 
 local function SetDBValue(key, value)
@@ -476,6 +489,10 @@ local function SyncOptionsPanel()
         if key == "growthDirection" then
             if widget.SetText then
                 widget:SetText(GROWTH_LABELS[db.growthDirection or "AUTO"] or GROWTH_LABELS.AUTO)
+            end
+        elseif key == "flywheelModifier" then
+            if widget.SetText then
+                widget:SetText(FLYWHEEL_MOD_LABELS[db.flywheelModifier or "NONE"] or FLYWHEEL_MOD_LABELS.NONE)
             end
         elseif key == "scale" then
             local pct = math.floor((db.scale or 1) * 100 + 0.5)
@@ -733,20 +750,45 @@ function XMB:CreateOptions()
     y = y - 36
     MakeLabel(page, "Mark Wheel", "GameFontNormal", 16, y)
     y = y - 26
-    MakeCheck(page, "Double-click a unit for the mark wheel", "flywheelUnits", 12, y)
+    MakeCheck(page, "Unit mark wheel (mobs, players, frames)", "flywheelUnits", 12, y)
     y = y - 28
-    MakeCheck(page, "Double-click the ground for the world-marker wheel", "flywheelWorld", 12, y)
-    y = y - 30
+    MakeCheck(page, "World-marker wheel (the ground)", "flywheelWorld", 12, y)
+    y = y - 32
+    local modBtn = CreateFrame("Button", "XiusMarksBarOpt_FlywheelMod", page, "UIPanelButtonTemplate")
+    modBtn:SetSize(220, 24)
+    modBtn:SetPoint("TOPLEFT", 16, y)
+    optionWidgets.flywheelModifier = modBtn
+    local function FlywheelModLabel()
+        local mode = XMB.db and XMB.db.flywheelModifier or "NONE"
+        return FLYWHEEL_MOD_LABELS[mode] or FLYWHEEL_MOD_LABELS.NONE
+    end
+    modBtn:SetText(FlywheelModLabel())
+    modBtn:SetScript("OnClick", function()
+        if syncingOptions or not XMB.db then
+            return
+        end
+        local current = XMB.db.flywheelModifier or "NONE"
+        local nextMode = "NONE"
+        for i = 1, #FLYWHEEL_MOD_ORDER do
+            if FLYWHEEL_MOD_ORDER[i] == current then
+                nextMode = FLYWHEEL_MOD_ORDER[(i % #FLYWHEEL_MOD_ORDER) + 1]
+                break
+            end
+        end
+        SetDBValue("flywheelModifier", nextMode)
+        modBtn:SetText(FlywheelModLabel())
+    end)
+    y = y - 28
     MakeLabel(
         page,
-        "Works on mobs, players, nameplates, and unit frames. Double-click is outside combat. In combat, use Key Bindings for the mark wheels.",
+        "Click to cycle. Hold that key and double-click a unit or the ground. Double-click means no extra key. Outside combat. In combat, use Key Bindings for the mark wheels.",
         "GameFontHighlightSmall",
         16,
         y,
         true
     )
 
-    y = y - 56
+    y = y - 64
     MakeLabel(page, "Expand Direction", "GameFontNormal", 16, y)
     y = y - 24
     local growthBtn = CreateFrame("Button", "XiusMarksBarOpt_Growth", page, "UIPanelButtonTemplate")

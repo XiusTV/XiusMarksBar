@@ -16,7 +16,8 @@ A compact raid marking bar for **modern World of Warcraft** and **World of Warcr
 
 - **Double-click a unit** (mob, player, nameplate, or unit frame) to open a target-mark wheel on your cursor.
 - **Double-click the ground** to open a world-marker wheel.
-- **In combat,** bind the wheels. Double-click is outside combat only.
+- **Optional modifier:** set the wheel to Shift, Alt, or Ctrl + double-click under `/xmb`. Plain double-click stays the default.
+- **In combat,** bind the wheels. The double-click gesture is outside combat only.
 - **Right-click or Escape** closes the wheel. Choosing a mark closes it too.
 
 ### Group Tools
@@ -65,7 +66,7 @@ Open settings with `/xmb`, or **Game Menu → Options → AddOns → Xius Marks 
 - **Marks On The Bar:** Show or hide the star and the flag.
 - **Countdown:** Show or hide 5, 10, and 20 separately.
 - **Group Checks:** Ready check and role check.
-- **Mark Wheel:** Double-click units, and double-click the ground.
+- **Mark Wheel:** Unit wheel, world-marker wheel, and the double-click modifier (none, Shift, Alt, or Ctrl).
 - **Expand Direction:** Auto, always up, or always down.
 - **Bar Scale:** 60% – 160%.
 - **Key Bindings:** Click a box, then press a key or mouse button. Right-click a box to clear it. Clear All Keybinds wipes every bind for this addon.
@@ -75,7 +76,7 @@ Settings are saved per account in `XiusMarksBarDB`.
 
 ## Installation
 
-1. Download **XiusMarksBar-1.3.6.zip** from the latest [release](https://github.com/XiusTV/XiusMarksBar/releases).
+1. Download **XiusMarksBar-1.3.7.zip** from the latest [release](https://github.com/XiusTV/XiusMarksBar/releases).
 2. Extract the `XiusMarksBar` folder into:
    - Retail: `World of Warcraft\_retail_\Interface\AddOns`
    - Forever: `World of Warcraft Forever\Interface\AddOns`

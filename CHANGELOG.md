@@ -2,6 +2,11 @@
 
 All notable changes to Xius Marks Bar are documented in this file.
 
+## 1.3.7
+
+### Added
+- Mark wheel modifier. In `/xmb`, under Mark Wheel, choose Double-click, Shift + double-click, Alt + double-click, or Ctrl + double-click. The chosen key must be held alone. A plain double-click stays the default.
+
 ## 1.3.6
 
 ### Added
