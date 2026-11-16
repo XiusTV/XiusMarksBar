@@ -36,7 +36,6 @@ Settings open inside [Xius Core](https://github.com/XiusTV/XiusCore). The bar is
 - **Out-of-the-way tooltips:** Tooltips sit above or below the whole bar.
 - **Pixel-snapped:** The bar stays where you placed it when you resize it or the UI scale changes.
 - **Key bindings:** Every mark, both clears, and both wheels can be bound. Nothing is bound until you choose a key.
-- **Unlock Frames:** `/xius unlock`, or right-click the Xius Core minimap button, shows a drag overlay on the bar. Locking saves its position and hides the overlay.
 
 ## Controls & Slash Commands
 

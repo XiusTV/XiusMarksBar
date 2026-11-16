@@ -7,11 +7,9 @@
 
 local ADDON, XMB = ...
 
-BINDING_HEADER_XIUSMARKSBAR = "Xius Marks Bar"
-BINDING_NAME_XIUSMB_UNIT_WHEEL = "Open target mark wheel"
-BINDING_NAME_XIUSMB_WORLD_WHEEL = "Open world marker wheel"
-_G["BINDING_NAME_CLICK XiusMB_FlywheelToggle:LeftButton"] = "Open target mark wheel"
-_G["BINDING_NAME_CLICK XiusMB_FlywheelWorldToggle:LeftButton"] = "Open world marker wheel"
+if XMB.disabled then
+    return
+end
 
 local WHEEL = 168
 local HALF = WHEEL / 2
@@ -24,6 +22,21 @@ local SPOKE_HOVER = 44
 
 local IsSecret = XMB.IsSecret
 local IsFiniteNumber = XMB.IsFiniteNumber
+
+local function CombatLocked()
+    return XMB:CombatLocked()
+end
+
+local function Clock()
+    if type(GetTime) ~= "function" then
+        return 0
+    end
+    local ok, value = pcall(GetTime)
+    if ok and IsFiniteNumber(value) then
+        return value
+    end
+    return 0
+end
 local MARK_TEXTURES = XMB.MARK_TEXTURES
 local MARK_NAMES = XMB.MARK_NAMES
 local WORLD_ICON = XMB.WORLD_ICON
@@ -141,8 +154,11 @@ local hasPendingClick = false
 local singleFocus = {}
 
 local function CursorRaw()
-    local x, y = GetCursorPosition()
-    if not IsFiniteNumber(x) or not IsFiniteNumber(y) then
+    if type(GetCursorPosition) ~= "function" then
+        return 0, 0
+    end
+    local ok, x, y = pcall(GetCursorPosition)
+    if not ok or not IsFiniteNumber(x) or not IsFiniteNumber(y) then
         return 0, 0
     end
     return x, y
@@ -150,12 +166,25 @@ end
 
 local function CursorPoint()
     local x, y = CursorRaw()
-    local scale = UIParent:GetEffectiveScale() or 1
-    if not IsFiniteNumber(scale) or scale <= 0 then
-        scale = 1
+    local scale = 1
+    if UIParent and UIParent.GetEffectiveScale then
+        local rawScale = UIParent:GetEffectiveScale()
+        if IsFiniteNumber(rawScale) and rawScale > 0 then
+            scale = rawScale
+        end
     end
     x, y = x / scale, y / scale
-    local sw, sh = UIParent:GetWidth() or 1024, UIParent:GetHeight() or 768
+    local sw, sh = 1024, 768
+    if UIParent then
+        local rawW = UIParent:GetWidth()
+        local rawH = UIParent:GetHeight()
+        if IsFiniteNumber(rawW) and rawW > 0 then
+            sw = rawW
+        end
+        if IsFiniteNumber(rawH) and rawH > 0 then
+            sh = rawH
+        end
+    end
     if not IsFiniteNumber(sw) or sw <= 0 then
         sw = 1024
     end
@@ -272,7 +301,7 @@ end
 function XMB:ApplyFlywheelSettings()
     local db = self.db
     local wheel = self.flywheel
-    if InCombatLockdown() then
+    if CombatLocked() then
         self.pendingFlywheelSettings = true
         return
     end
@@ -393,12 +422,12 @@ function XMB:UseMarkUnit(unit)
     -- mouseover and nameplate tokens disappear once the cursor moves onto an icon.
     -- Stable unit tokens (focus, party1, raid1, etc.) can be marked directly outside combat.
     local resolved = "target"
-    if not InCombatLockdown() and IsStableUnitToken(unit) and UnitIsReal(unit) then
+    if not CombatLocked() and IsStableUnitToken(unit) and UnitIsReal(unit) then
         resolved = unit
     end
     self.markUnit = resolved
     local buttons = self.flywheelUnitButtons
-    if not buttons or InCombatLockdown() then
+    if not buttons or CombatLocked() then
         return resolved
     end
     for i = 1, #buttons do
@@ -468,7 +497,7 @@ local function IsOverWheel()
 end
 
 function XMB:CloseFlywheel()
-    if InCombatLockdown() then
+    if CombatLocked() then
         return
     end
     if self.flywheel and self.flywheel:IsShown() then
@@ -498,7 +527,7 @@ function XMB:OpenFlywheel(kind, unit)
             return
         end
     end
-    if InCombatLockdown() then
+    if CombatLocked() then
         self:FlywheelCombatNotice()
         return
     end
@@ -513,7 +542,7 @@ function XMB:OpenFlywheel(kind, unit)
         self.flywheelPortrait:Hide()
     end
 
-    if InCombatLockdown() then
+    if CombatLocked() then
         self:FlywheelCombatNotice()
         return
     end
@@ -571,7 +600,7 @@ function XMB:OpenFlywheel(kind, unit)
         ShowList(self.flywheelUnitButtons, true)
     end
     wheel:Show()
-    self.flywheelOpenedAt = GetTime()
+    self.flywheelOpenedAt = Clock()
 end
 
 local function SafeSame(a, b)
@@ -758,7 +787,7 @@ local function FlushFlywheelClick()
         return
     end
     hasPendingClick = false
-    if not XMB.db or InCombatLockdown() then
+    if not XMB.db or CombatLocked() then
         return
     end
     if IsOverWheel() then
@@ -879,7 +908,7 @@ end
 
 function XMB:NoteFlywheelClick(kind, unit)
     local db = self.db
-    if not db or InCombatLockdown() then
+    if not db or CombatLocked() then
         return
     end
     if not FlywheelModifierMatches(db) then
@@ -895,7 +924,13 @@ function XMB:NoteFlywheelClick(kind, unit)
         kind = "world"
         unit = nil
     end
-    local now = GetTime()
+    local now = 0
+    if type(GetTime) == "function" then
+        local ok, value = pcall(GetTime)
+        if ok and IsFiniteNumber(value) then
+            now = value
+        end
+    end
     local x, y = CursorRaw()
     if hasPendingClick and (now - pendingClick.time) < SAME_CLICK then
         if kind == "unit" and UnitIsReal(unit) then
@@ -921,13 +956,13 @@ local function HookUnitClick(frame)
     if not ReadableFrame(frame) or hookedFrames[frame] or not frame.HookScript then
         return
     end
-    if InCombatLockdown() then
+    if CombatLocked() then
         pendingHooks[frame] = true
         return
     end
     pendingHooks[frame] = nil
     local ok = pcall(frame.HookScript, frame, "OnMouseUp", function(self, button)
-        if InCombatLockdown() then
+        if CombatLocked() then
             return
         end
         if button == "RightButton" then
@@ -950,7 +985,7 @@ local function HookUnitClick(frame)
 end
 
 local function FlushUnitHooks()
-    if InCombatLockdown() then
+    if CombatLocked() then
         return
     end
     for frame in pairs(pendingHooks) do
@@ -1014,7 +1049,7 @@ local function HookExistingPlates()
 end
 
 local function MigrateOldBindings()
-    if InCombatLockdown() or not GetBindingKey or not SetBinding then
+    if CombatLocked() or not GetBindingKey or not SetBinding then
         return
     end
     pcall(function()
@@ -1115,7 +1150,7 @@ end
         end
     end
     escFrame:SetScript("OnHide", function()
-        if wheel:IsShown() and not InCombatLockdown() then
+        if wheel:IsShown() and not CombatLocked() then
             wheel:Hide()
             if block:IsShown() then
                 block:Hide()
@@ -1209,10 +1244,14 @@ end
     local portrait = unitCenter:CreateTexture(nil, "ARTWORK")
     portrait:SetPoint("CENTER")
     portrait:SetSize(60, 60)
-    local mask = unitCenter:CreateMaskTexture()
-    mask:SetAllPoints(portrait)
-    mask:SetTexture("Interface\\CharacterFrame\\TempPortraitAlphaMask", "CLAMPTOBLACKADDITIVE", "CLAMPTOBLACKADDITIVE")
-    portrait:AddMaskTexture(mask)
+    if unitCenter.CreateMaskTexture and portrait.AddMaskTexture then
+        local okMask, mask = pcall(unitCenter.CreateMaskTexture, unitCenter)
+        if okMask and mask and mask.SetTexture then
+            mask:SetAllPoints(portrait)
+            mask:SetTexture("Interface\\CharacterFrame\\TempPortraitAlphaMask", "CLAMPTOBLACKADDITIVE", "CLAMPTOBLACKADDITIVE")
+            pcall(portrait.AddMaskTexture, portrait, mask)
+        end
+    end
     portrait:Hide()
     self.flywheelPortrait = portrait
 
@@ -1297,11 +1336,11 @@ end
     pcall(RegisterStateDriver, wheel, "combat", "[combat] combat; nocombat")
 
     wheel:SetScript("OnShow", function(self)
-        XMB.flywheelOpenedAt = GetTime()
+        XMB.flywheelOpenedAt = Clock()
         if self:GetAttribute("mode") ~= "world" then
             XMB:RefreshFlywheelPortrait()
         end
-        if not InCombatLockdown() and escFrame then
+        if not CombatLocked() and escFrame then
             escFrame:Show()
         end
     end)
@@ -1312,7 +1351,7 @@ end
         if escFrame and escFrame:IsShown() then
             escFrame:Hide()
         end
-        if not InCombatLockdown() then
+        if not CombatLocked() then
             if block:IsShown() then
                 block:Hide()
             end
@@ -1337,7 +1376,7 @@ local function OnPostSecureActionClick(self, button, down)
         self.icon:SetSize(SPOKE_SIZE, SPOKE_SIZE)
     end
     local wheel = XMB.flywheel
-    if not wheel or not wheel:IsShown() or InCombatLockdown() then
+    if not wheel or not wheel:IsShown() or CombatLocked() then
         return
     end
     wheel:Hide()
@@ -1357,7 +1396,7 @@ if type(hooksecurefunc) == "function" then
 end
 
 local function OnUnitButtonClick(self, button)
-    if InCombatLockdown() or button ~= "LeftButton" then
+    if CombatLocked() or button ~= "LeftButton" then
         return
     end
     pcall(function()
@@ -1385,7 +1424,7 @@ end
 
 if WorldFrame and WorldFrame.HookScript then
     local function OnWorldClick(_, button)
-        if InCombatLockdown() then
+        if CombatLocked() then
             return
         end
         if button == "RightButton" then
@@ -1419,7 +1458,7 @@ function XMB:EnsureFlywheel()
     if self.flywheel or self.flywheelFailed then
         return
     end
-    if InCombatLockdown() then
+    if CombatLocked() then
         self.pendingFlywheel = true
         return
     end
@@ -1474,14 +1513,14 @@ watcher:SetScript("OnEvent", function(_, event, arg1)
             XMB:RefreshFlywheelPortrait()
         end
     elseif event == "GLOBAL_MOUSE_UP" then
-        if InCombatLockdown() then
+        if CombatLocked() then
             return
         end
         if arg1 ~= "LeftButton" and arg1 ~= "RightButton" then
             return
         end
         if XMB.flywheel and XMB.flywheel:IsShown() then
-            if (GetTime() - (XMB.flywheelOpenedAt or 0)) > 0.05 and not IsOverWheel() then
+            if (Clock() - (XMB.flywheelOpenedAt or 0)) > 0.05 and not IsOverWheel() then
                 XMB:CloseFlywheel()
             end
         end

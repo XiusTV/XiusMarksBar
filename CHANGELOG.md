@@ -2,6 +2,21 @@
 
 All notable changes to Xius Marks Bar are documented in this file.
 
+## 1.3.8
+
+### Added
+- Xius Core is required. `/xmb` opens the Marks page in that window.
+- Show the bar, and visibility for always, group or instance, or leader or assistant.
+- Account settings stay on the same table Xius Core uses for profiles.
+
+### Changed
+- The bar wraps the buttons that are turned on. A mark row widens it only while that row is open.
+- Key bindings are declared once, in this addon's `Bindings.xml`.
+
+### Fixed
+- Starting a new pull cancels the countdown already running, including the Blizzard raid countdown.
+- The mark wheel still builds if the client has no portrait mask texture.
+
 ## 1.3.7
 
 ### Added
