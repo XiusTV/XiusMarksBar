@@ -40,6 +40,7 @@ local WHEEL = 168
 local HALF = WHEEL / 2
 local RADIUS = 58
 local DOUBLE_WINDOW = 0.32
+local TARGET_DOUBLE_WINDOW = 0.35
 local SAME_CLICK = 0.08
 local MOVE_LIMIT = 56
 local SPOKE_SIZE = 36
@@ -94,8 +95,12 @@ end
 
 -- Weak tables avoid writing custom fields onto Blizzard unit frames or nameplates (prevents taint).
 local hookedFrames = setmetatable({}, { __mode = "k" })
+local hookedTargetFrames = setmetatable({}, { __mode = "k" })
 local plateUnits = setmetatable({}, { __mode = "k" })
 local pendingHooks = setmetatable({}, { __mode = "k" })
+local targetFrameClickAt = 0
+local targetFramePulseAt = 0
+local targetFrameOpenAt = 0
 
 local UNIT_TOGGLE_SNIPPET = [[
 if self:GetAttribute("enabled") == 0 then
@@ -570,6 +575,26 @@ function XMB:CloseFlywheel()
     end
 end
 
+-- Hide the wheel when combat starts. Secure state driver also hides it; this clears
+-- overlays immediately. Never touches TargetFrame attributes or anchors.
+function XMB:ForceCloseFlywheel()
+    hasPendingClick = false
+    lastClick.kind = nil
+    targetFrameClickAt = 0
+    targetFramePulseAt = 0
+    local wheel = self.flywheel
+    if wheel then
+        pcall(wheel.Hide, wheel)
+    end
+    local block = self.flywheelBlocker
+    if block then
+        pcall(block.Hide, block)
+    end
+    if self.flywheelEsc and self.flywheelEsc.IsShown and self.flywheelEsc:IsShown() then
+        self.flywheelEsc:Hide()
+    end
+end
+
 -- Never call EnableMouse(false) on hidden buttons so the secure combat toggle can show them.
 local function ShowWheelList(list, shown)
     if not list then
@@ -1006,28 +1031,158 @@ function XMB:NoteFlywheelClick(kind, unit)
     end
 end
 
-local function OnHookedFrameMouseUp(self, button)
+local function CanOpenTargetFrameWheel()
     if CombatLocked() then
+        return false
+    end
+    local db = XMB.db
+    if not db or not db.flywheelUnits then
+        return false
+    end
+    if not FlywheelModifierMatches(db) then
+        return false
+    end
+    if CallTruthy(IsMouselooking) or CallTruthy(SpellIsTargeting) then
+        return false
+    end
+    -- TargetFrame / portrait double-click always marks the current target.
+    if not UnitIsReal("target") then
+        return false
+    end
+    return true
+end
+
+local function OpenTargetFrameWheel()
+    if not CanOpenTargetFrameWheel() then
         return
     end
-    if button == "RightButton" then
-        if XMB.flywheel and XMB.flywheel:IsShown() and not IsOverWheel() then
-            XMB:CloseFlywheel()
-        end
+    local now = Clock()
+    -- OnDoubleClick and the MouseDown/PostClick timer can both fire for one gesture.
+    if (now - targetFrameOpenAt) < 0.2 then
         return
     end
+    targetFrameOpenAt = now
+    targetFrameClickAt = 0
+    targetFramePulseAt = 0
+    -- OpenFlywheel centers on GetCursorPosition() / UIParent scale and clamps to screen.
+    XMB:OpenFlywheel("unit", "target")
+end
+
+-- SecureUnitButtonTemplate often eats OnDoubleClick; time LeftButton presses instead.
+local function NoteTargetFrameClick(button)
     if button ~= "LeftButton" then
         return
     end
-    local unit = UnitFromFrame(self)
-    if UnitIsReal(unit) then
-        XMB:NoteFlywheelClick("unit", unit)
+    if CombatLocked() then
+        targetFrameClickAt = 0
+        targetFramePulseAt = 0
+        return
+    end
+    if not CanOpenTargetFrameWheel() then
+        targetFrameClickAt = 0
+        return
+    end
+    local now = Clock()
+    -- One physical click can raise OnMouseDown and PostClick; count it once.
+    if (now - targetFramePulseAt) < SAME_CLICK then
+        return
+    end
+    targetFramePulseAt = now
+    local dt = now - targetFrameClickAt
+    if targetFrameClickAt > 0 and dt <= TARGET_DOUBLE_WINDOW and dt > SAME_CLICK then
+        OpenTargetFrameWheel()
+        return
+    end
+    targetFrameClickAt = now
+end
+
+local function OnTargetFrameDoubleClick(_, button)
+    if button ~= "LeftButton" then
+        return
+    end
+    OpenTargetFrameWheel()
+end
+
+local function OnTargetFrameMouseDown(_, button)
+    NoteTargetFrameClick(button)
+end
+
+local function OnTargetFramePostClick(_, button, down)
+    if down then
+        return
+    end
+    NoteTargetFrameClick(button)
+end
+
+local function AddTargetFrameHookCandidate(list, frame)
+    if not ReadableFrame(frame) or not frame.HookScript or hookedTargetFrames[frame] then
+        return
+    end
+    list[#list + 1] = frame
+end
+
+local function CollectTargetFrameHookTargets()
+    local list = {}
+    local tf = _G.TargetFrame
+    AddTargetFrameHookCandidate(list, tf)
+    if tf then
+        local container = tf.TargetFrameContainer
+        AddTargetFrameHookCandidate(list, container)
+        if container then
+            -- Portrait is often a Texture; only hook if it is a real mouse frame.
+            AddTargetFrameHookCandidate(list, container.Portrait)
+            AddTargetFrameHookCandidate(list, container.PortraitContainer)
+        end
+        AddTargetFrameHookCandidate(list, tf.portrait)
+        AddTargetFrameHookCandidate(list, tf.Portrait)
+        local content = tf.TargetFrameContent
+        AddTargetFrameHookCandidate(list, content)
+        if content then
+            AddTargetFrameHookCandidate(list, content.TargetFrameContentMain)
+            AddTargetFrameHookCandidate(list, content.TargetFrameContentContextual)
+        end
+    end
+    AddTargetFrameHookCandidate(list, _G.TargetFramePortrait)
+    AddTargetFrameHookCandidate(list, _G.TargetFrameTextureFrame)
+    return list
+end
+
+local function HookOneTargetFrame(frame)
+    if not ReadableFrame(frame) or hookedTargetFrames[frame] or not frame.HookScript then
+        return
+    end
+    if CombatLocked() then
+        pendingHooks[frame] = true
+        return
+    end
+    pendingHooks[frame] = nil
+    -- Never SetAttribute / re-parent / re-anchor TargetFrame. Hook listeners only.
+    local okDouble = pcall(frame.HookScript, frame, "OnDoubleClick", OnTargetFrameDoubleClick)
+    local okDown = pcall(frame.HookScript, frame, "OnMouseDown", OnTargetFrameMouseDown)
+    local okPost = pcall(frame.HookScript, frame, "PostClick", OnTargetFramePostClick)
+    if okDouble or okDown or okPost then
+        hookedTargetFrames[frame] = true
+        hookedFrames[frame] = true
     end
 end
 
-local function HookUnitClick(frame)
-    -- Do not HookScript Blizzard unit frames: that taints their click path.
-    -- SecureUnitButton_OnClick / SecureUnitButtonMixin hooks below are enough.
+local function HookTargetFrameRadial()
+    local frames = CollectTargetFrameHookTargets()
+    if CombatLocked() then
+        for i = 1, #frames do
+            pendingHooks[frames[i]] = true
+        end
+        return
+    end
+    for i = 1, #frames do
+        HookOneTargetFrame(frames[i])
+    end
+end
+
+local function HookUnitClick(_frame)
+    -- Do not HookScript party/raid/nameplate Blizzard frames: that taints their click path.
+    -- SecureUnitButton_OnClick / SecureUnitButtonMixin hooks below cover those.
+    -- TargetFrame / portrait use HookTargetFrameRadial instead.
     return
 end
 
@@ -1035,12 +1190,15 @@ local function FlushUnitHooks()
     if CombatLocked() then
         return
     end
+    HookTargetFrameRadial()
     for frame in pairs(pendingHooks) do
-        HookUnitClick(frame)
+        HookOneTargetFrame(frame)
+        pendingHooks[frame] = nil
     end
 end
 
 local function HookStaticUnitFrames()
+    HookTargetFrameRadial()
     for i = 1, #STATIC_UNIT_FRAMES do
         HookUnitClick(_G[STATIC_UNIT_FRAMES[i]])
     end
@@ -1529,10 +1687,16 @@ watcher:SetScript("OnEvent", function(_, event, arg1)
     elseif event == "PLAYER_LEAVING_WORLD" then
         hasPendingClick = false
         lastClick.kind = nil
+        targetFrameClickAt = 0
+        targetFramePulseAt = 0
         XMB:CloseFlywheel()
     elseif event == "PLAYER_TARGET_CHANGED" then
-        if not UnitIsReal("target") and lastClick.kind == "unit" then
-            lastClick.kind = nil
+        if not UnitIsReal("target") then
+            if lastClick.kind == "unit" then
+                lastClick.kind = nil
+            end
+            targetFrameClickAt = 0
+            targetFramePulseAt = 0
         end
         if XMB.flywheel and XMB.flywheel:IsShown() and XMB.flywheel:GetAttribute("mode") == "unit" then
             XMB:RefreshFlywheelPortrait()
@@ -1548,11 +1712,8 @@ watcher:SetScript("OnEvent", function(_, event, arg1)
             XMB:CloseFlywheel()
         end
     elseif event == "PLAYER_REGEN_DISABLED" then
-        hasPendingClick = false
-        lastClick.kind = nil
-        if XMB.flywheelEsc and XMB.flywheelEsc:IsShown() then
-            XMB.flywheelEsc:Hide()
-        end
+        -- Hide the radial wheel immediately when combat starts (state driver also hides it).
+        XMB:ForceCloseFlywheel()
         if XMB.markUnit and XMB.markUnit ~= "target" then
             XMB:UseMarkUnit("target")
         end
@@ -1565,5 +1726,6 @@ watcher:SetScript("OnEvent", function(_, event, arg1)
             XMB:ApplyFlywheelSettings()
         end
         FlushUnitHooks()
+        HookTargetFrameRadial()
     end
 end)

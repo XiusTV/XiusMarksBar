@@ -2,6 +2,13 @@
 
 All notable changes to Xius Marks Bar are documented in this file.
 
+## 1.4.1
+
+### Fixed
+- Double-clicking the target frame or portrait out of combat opens the radial target-mark wheel again.
+- Uses `OnDoubleClick` plus a 0.35s `OnMouseDown` / `PostClick` fallback for `SecureUnitButtonTemplate`.
+- The wheel still centers on the cursor, and it closes immediately when combat starts.
+
 ## 1.4
 
 ### Added

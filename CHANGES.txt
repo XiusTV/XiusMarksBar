@@ -1,8 +1,8 @@
-Xius Marks Bar v1.4
+Xius Marks Bar v1.4.1
 
-Release 1.4: Per-mark toggles, Core sub-tabs, safer combat and secret-value handling.
+Release 1.4.1: Restore target frame / portrait double-click for the mark wheel.
 
-Compared to GitHub 1.3.8 (2026-11-16):
-- Settings split into General / Marks & Wheels / Timers & Checks.
-- Show or hide each mark, each world marker, and both Clear buttons.
-- Secure role check, cleaner wheel hooks, profile sync, and combat-safe layout.
+Compared to 1.4:
+- Double-click TargetFrame or its portrait out of combat opens the radial target-mark menu.
+- OnDoubleClick plus a 0.35s OnMouseDown/PostClick fallback for SecureUnitButtonTemplate.
+- Wheel stays cursor-centered and hides when combat starts.

@@ -35,7 +35,7 @@ end
 
 XMB.ADDON = ADDON
 XMB.TITLE = "Xius Marks Bar"
-XMB.VERSION = "1.4"
+XMB.VERSION = "1.4.1"
 XMB.DB_VERSION = 1
 
 local function IsSecret(value)
