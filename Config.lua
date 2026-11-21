@@ -4,11 +4,22 @@
     The options window lives in XiusCore.
 ]]
 
-local ADDON, XMB = ...
+local addonName, ns = ...
+local ADDON, XMB = addonName, ns
 
-local coreLoaded = (_G.XiusUI and _G.XiusUI.isCore)
+local type = type
+local pairs = pairs
+local tostring = tostring
+local tonumber = tonumber
+local pcall = pcall
+local floor = math.floor
+local huge = math.huge
+local lower = string.lower
+local format = string.format
+local match = string.match
+
+local coreLoaded = (_G.XiusCore and _G.XiusCore.isCore)
     or _G.XiusCoreSettingsLib
-    or _G.XiusUISettingsLib
 if not coreLoaded and type(C_AddOns) == "table" and type(C_AddOns.IsAddOnLoaded) == "function" then
     local ok, loaded = pcall(C_AddOns.IsAddOnLoaded, "XiusCore")
     coreLoaded = ok and loaded
@@ -24,19 +35,24 @@ end
 
 XMB.ADDON = ADDON
 XMB.TITLE = "Xius Marks Bar"
-XMB.VERSION = "1.3.8"
+XMB.VERSION = "1.4"
 XMB.DB_VERSION = 1
 
 local function IsSecret(value)
+    if value == nil then
+        return false
+    end
+    -- Forever can throw from secret APIs; treat failure as secret so mark
+    -- index / combat checks never do arithmetic on restricted values.
     if type(issecretvalue) == "function" then
         local ok, secret = pcall(issecretvalue, value)
-        if ok and secret == true then
+        if not ok or secret == true then
             return true
         end
     end
     if type(canaccessvalue) == "function" then
         local ok, access = pcall(canaccessvalue, value)
-        if ok and access == false then
+        if not ok or access == false then
             return true
         end
     end
@@ -47,12 +63,12 @@ local function IsFiniteNumber(value)
     if IsSecret(value) or type(value) ~= "number" then
         return false
     end
-    return value == value and value > -math.huge and value < math.huge
+    return value == value and value > -huge and value < huge
 end
 
 function XMB:CombatLocked()
     if type(InCombatLockdown) ~= "function" then
-        return true
+        return false
     end
     local ok, locked = pcall(InCombatLockdown)
     if not ok or IsSecret(locked) then
@@ -65,8 +81,12 @@ XMB.IsSecret = IsSecret
 XMB.IsFiniteNumber = IsFiniteNumber
 
 XMB.MARK_TEXTURES = {}
+XMB.TARGET_MARK_KEYS = {}
+XMB.WORLD_MARK_KEYS = {}
 for i = 1, 8 do
     XMB.MARK_TEXTURES[i] = "Interface\\TargetingFrame\\UI-RaidTargetingIcon_" .. i
+    XMB.TARGET_MARK_KEYS[i] = "showTargetMark" .. i
+    XMB.WORLD_MARK_KEYS[i] = "showWorldMark" .. i
 end
 
 XMB.MARK_NAMES = {
@@ -93,8 +113,6 @@ XMB.WORLD_NAMES = {
 }
 
 BINDING_HEADER_XIUSMARKSBAR = "Xius Marks Bar"
-BINDING_NAME_XIUSMB_UNIT_WHEEL = "Open target mark wheel"
-BINDING_NAME_XIUSMB_WORLD_WHEEL = "Open world marker wheel"
 _G["BINDING_NAME_CLICK XiusMB_FlywheelToggle:LeftButton"] = "Open target mark wheel"
 _G["BINDING_NAME_CLICK XiusMB_FlywheelWorldToggle:LeftButton"] = "Open world marker wheel"
 for i = 1, 8 do
@@ -125,6 +143,24 @@ XMB.defaults = {
     showRole = true,
     enableTargetMarks = true,
     enableWorldMarks = true,
+    showTargetMark1 = true,
+    showTargetMark2 = true,
+    showTargetMark3 = true,
+    showTargetMark4 = true,
+    showTargetMark5 = true,
+    showTargetMark6 = true,
+    showTargetMark7 = true,
+    showTargetMark8 = true,
+    showTargetClear = true,
+    showWorldMark1 = true,
+    showWorldMark2 = true,
+    showWorldMark3 = true,
+    showWorldMark4 = true,
+    showWorldMark5 = true,
+    showWorldMark6 = true,
+    showWorldMark7 = true,
+    showWorldMark8 = true,
+    showWorldClear = true,
     showTarget = false,
     showWorld = false,
     flywheelUnits = true,
@@ -178,18 +214,8 @@ local function AdoptCoreDB()
     XiusMarksBarDB = saved
 end
 
-function XMB:InitDB()
-    AdoptCoreDB()
-    local saved = XiusMarksBarDB
-    local hadPull5 = type(saved) == "table" and saved.showPull5 ~= nil
-    local hadPull10 = type(saved) == "table" and saved.showPull10 ~= nil
-    local hadPull20 = type(saved) == "table" and saved.showPull20 ~= nil
-    local oldCountdown = type(saved) == "table" and saved.showCountdown
-    local hadVisibility = type(saved) == "table" and type(saved.visibility) == "string"
-    local wasGrouped = type(saved) == "table" and saved.onlyInGroup == true
-    XiusMarksBarDB = CopyDefaults(self.defaults, XiusMarksBarDB)
-    self.db = XiusMarksBarDB
-    local db = self.db
+local function SanitizeDB(db, defaults, hadVisibility, wasGrouped, oldCountdown, hadPull5, hadPull10, hadPull20)
+    CopyDefaults(defaults, db)
     if oldCountdown == false then
         if not hadPull5 then
             db.showPull5 = false
@@ -201,7 +227,6 @@ function XMB:InitDB()
             db.showPull20 = false
         end
     end
-
     if not hadVisibility then
         db.visibility = wasGrouped and "group" or "always"
     elseif db.visibility ~= "group" and db.visibility ~= "leader" then
@@ -219,8 +244,7 @@ function XMB:InitDB()
     end
     if not IsFiniteNumber(db.scale) then
         db.scale = 1
-    end
-    if db.scale < 0.6 then
+    elseif db.scale < 0.6 then
         db.scale = 0.6
     elseif db.scale > 1.6 then
         db.scale = 1.6
@@ -230,7 +254,46 @@ function XMB:InitDB()
         db.headerBottom = nil
         db.headerTop = nil
     end
-    db.dbVersion = self.DB_VERSION
+    db.dbVersion = XMB.DB_VERSION
+end
+
+function XMB:InitDB()
+    AdoptCoreDB()
+    local saved = XiusMarksBarDB
+    local isTbl = type(saved) == "table"
+    local hadPull5 = isTbl and saved.showPull5 ~= nil
+    local hadPull10 = isTbl and saved.showPull10 ~= nil
+    local hadPull20 = isTbl and saved.showPull20 ~= nil
+    local oldCountdown = isTbl and saved.showCountdown
+    local hadVisibility = isTbl and type(saved.visibility) == "string"
+    local wasGrouped = isTbl and saved.onlyInGroup == true
+    if not isTbl then
+        saved = {}
+        XiusMarksBarDB = saved
+        if type(XiusUIDB) == "table" then
+            XiusUIDB.marks = saved
+        end
+    end
+    self.db = saved
+    SanitizeDB(saved, self.defaults, hadVisibility, wasGrouped, oldCountdown, hadPull5, hadPull10, hadPull20)
+end
+
+-- Ensures XiusCore profile switches keep XMB.db, XiusMarksBarDB, and XiusUIDB.marks unified.
+function XMB:SyncProfileDB()
+    if type(XiusUIDB) == "table" and type(XiusUIDB.marks) == "table" then
+        if self.db ~= XiusUIDB.marks then
+            self.db = XiusUIDB.marks
+        end
+        if XiusMarksBarDB ~= XiusUIDB.marks then
+            XiusMarksBarDB = XiusUIDB.marks
+        end
+    end
+    if type(self.db) == "table" then
+        local db = self.db
+        local hadVisibility = type(db.visibility) == "string"
+        local wasGrouped = db.onlyInGroup == true
+        SanitizeDB(db, self.defaults, hadVisibility, wasGrouped, nil, true, true, true)
+    end
 end
 
 function XMB:NotifySettingsChanged()
@@ -280,6 +343,19 @@ function XMB:SetDBValue(key, value)
     self:NotifySettingsChanged()
 end
 
+function XMB:SetLocked(locked)
+    local isLocked = locked and true or false
+    if self.db then
+        if self.db.isLocked == isLocked then
+            return
+        end
+        self.db.isLocked = isLocked
+    end
+    if self.UpdateGrip then
+        self:UpdateGrip()
+    end
+end
+
 function XMB:ResetToDefaults()
     if not self.db then
         self:InitDB()
@@ -299,20 +375,17 @@ function XMB:ResetToDefaults()
 end
 
 function XMB:UnlockFrames()
-    if self.db then
-        self.db.isLocked = false
-    end
-    self:NotifySettingsChanged()
+    self:SetLocked(false)
 end
 
-function XMB:OpenOptions()
+function XMB:OpenOptions(subTab)
     if InCombatLockdown and XMB:CombatLocked() then
         self:Print("Leave combat to open options.")
         return
     end
     local Lib = _G.XiusCoreSettingsLib
     if Lib and type(Lib.OpenModule) == "function" then
-        Lib:OpenModule("Marks")
+        Lib:OpenModule("Marks", subTab)
         return
     end
     self:Print("Xius Core is required to open options.")
@@ -322,8 +395,8 @@ function XMB:HandleSlash(msg)
     if not self.db then
         self:InitDB()
     end
-    local cmd, arg = (msg or ""):match("^%s*(%S*)%s*(.-)%s*$")
-    cmd = string.lower(cmd or "")
+    local cmd, arg = match(msg or "", "^%s*(%S*)%s*(.-)%s*$")
+    cmd = lower(cmd or "")
     if cmd == "" or cmd == "config" or cmd == "options" then
         self:OpenOptions()
     elseif cmd == "reset" then
@@ -331,7 +404,7 @@ function XMB:HandleSlash(msg)
             self:ResetPosition()
         end
     elseif cmd == "lock" or cmd == "unlock" then
-        self:SetDBValue("isLocked", cmd == "lock")
+        self:SetLocked(cmd == "lock")
         self:Print(cmd == "lock" and "Bar locked." or "Bar unlocked.")
     elseif cmd == "collapse" or cmd == "hide" then
         if self.SetRows then
@@ -347,7 +420,7 @@ function XMB:HandleSlash(msg)
             return
         end
         self:SetDBValue("scale", val)
-        self:Print(string.format("Scale set to %d%%.", math.floor(val * 100 + 0.5)))
+        self:Print(format("Scale set to %d%%.", floor(val * 100 + 0.5)))
     elseif cmd == "help" then
         self:Print("Commands: /xmb, /xmb reset, /xmb lock, /xmb unlock, /xmb scale 60-160, /xmb collapse")
     else
@@ -355,8 +428,11 @@ function XMB:HandleSlash(msg)
     end
 end
 
-if XiusUI and XiusUI.RegisterModule then
-    XiusUI:RegisterModule("Marks", XMB)
+do
+    local core = _G.XiusCore
+    if core and core.RegisterModule then
+        core:RegisterModule("Marks", XMB)
+    end
 end
 
 SLASH_XIUSMARKSBAR1 = "/xmb"

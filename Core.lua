@@ -5,11 +5,30 @@
     Pull timers, ready check, and role check stay on the bar.
 ]]
 
-local ADDON, XMB = ...
+local addonName, ns = ...
+local ADDON, XMB = addonName, ns
 
 if XMB.disabled then
     return
 end
+
+local type = type
+local pcall = pcall
+local tostring = tostring
+local floor = math.floor
+local abs = math.abs
+local format = string.format
+local CreateFrame = CreateFrame
+local UIParent = UIParent
+local GetTime = GetTime
+local IsInGroup = IsInGroup
+local IsInRaid = IsInRaid
+local IsInInstance = IsInInstance
+local UnitIsGroupLeader = UnitIsGroupLeader
+local UnitIsGroupAssistant = UnitIsGroupAssistant
+local GetRaidTargetIndex = GetRaidTargetIndex
+local GetPhysicalScreenSize = GetPhysicalScreenSize
+local CreateColor = CreateColor
 
 local PAD = 3
 local HEADER_H = 20
@@ -46,8 +65,30 @@ local COLOR = {
     iconAlpha = 0.88,
 }
 
+local EDGE_SPECS = {
+    { "TOPLEFT", "TOPRIGHT", true, 1, -1, -1, -1 },
+    { "BOTTOMLEFT", "BOTTOMRIGHT", true, 1, 1, -1, 1 },
+    { "TOPLEFT", "BOTTOMLEFT", false, 1, -1, 1, 1 },
+    { "TOPRIGHT", "BOTTOMRIGHT", false, -1, -1, -1, 1 },
+}
+
 local IsSecret = XMB.IsSecret
 local IsFiniteNumber = XMB.IsFiniteNumber
+local MARK_TEXTURES = XMB.MARK_TEXTURES
+local MARK_NAMES = XMB.MARK_NAMES
+local WORLD_ICON = XMB.WORLD_ICON
+local WORLD_NAMES = XMB.WORLD_NAMES
+local TARGET_MARK_KEYS = XMB.TARGET_MARK_KEYS
+local WORLD_MARK_KEYS = XMB.WORLD_MARK_KEYS
+
+local PULL_TIMES = { 5, 10, 20 }
+
+local pullSerial = 0
+local activePullSec = nil
+local activePullEnd = 0
+local layoutQueued = false
+local visibilityQueued = false
+local lastWorldNoticeAt = -10
 
 local function ReadNumber(value, fallback)
     if IsFiniteNumber(value) then
@@ -81,18 +122,6 @@ local function FrameShown(frame)
     end
     return shown == true
 end
-local MARK_TEXTURES = XMB.MARK_TEXTURES
-local MARK_NAMES = XMB.MARK_NAMES
-local WORLD_ICON = XMB.WORLD_ICON
-local WORLD_NAMES = XMB.WORLD_NAMES
-
-local PULL_TIMES = { 5, 10, 20 }
-
-local pullSerial = 0
-local activePullSec = nil
-local activePullEnd = 0
-local layoutQueued = false
-local lastWorldNoticeAt = -10
 
 -- WoW lowercases attribute names before OnAttributeChanged sees them.
 local HOST_SNIPPET = [[
@@ -191,20 +220,20 @@ local function SetFont(fs, size)
     pcall(fs.SetFont, fs, fontPath, size, "OUTLINE")
 end
 
-local function MakeEdges(frame, layer, r, g, b, a)
+local function MakeEdges(frame, layer, r, g, b, a, inset)
     local edges = {}
-    local specs = {
-        { "TOPLEFT", "TOPRIGHT", true },
-        { "BOTTOMLEFT", "BOTTOMRIGHT", true },
-        { "TOPLEFT", "BOTTOMLEFT", false },
-        { "TOPRIGHT", "BOTTOMRIGHT", false },
-    }
+    local useInset = inset == true
     for i = 1, 4 do
-        local spec = specs[i]
+        local spec = EDGE_SPECS[i]
         local t = frame:CreateTexture(nil, layer)
         t:SetColorTexture(r, g, b, a)
-        t:SetPoint(spec[1], frame, spec[1], 0, 0)
-        t:SetPoint(spec[2], frame, spec[2], 0, 0)
+        if useInset then
+            t:SetPoint(spec[1], frame, spec[1], spec[4], spec[5])
+            t:SetPoint(spec[2], frame, spec[2], spec[6], spec[7])
+        else
+            t:SetPoint(spec[1], frame, spec[1], 0, 0)
+            t:SetPoint(spec[2], frame, spec[2], 0, 0)
+        end
         if spec[3] then
             t:SetHeight(1)
         else
@@ -244,7 +273,6 @@ end
 
 -- Gold edges stop one pixel short of each corner so the frame reads as rounded.
 local function MakeRoundedEdges(frame, layer)
-    local edges = {}
     local top = frame:CreateTexture(nil, layer)
     top:SetPoint("TOPLEFT", frame, "TOPLEFT", 1, 0)
     top:SetPoint("TOPRIGHT", frame, "TOPRIGHT", -1, 0)
@@ -261,8 +289,7 @@ local function MakeRoundedEdges(frame, layer)
     right:SetPoint("TOPRIGHT", frame, "TOPRIGHT", 0, -1)
     right:SetPoint("BOTTOMRIGHT", frame, "BOTTOMRIGHT", 0, 1)
     right:SetWidth(1)
-    edges[1], edges[2], edges[3], edges[4] = top, bottom, left, right
-    return edges
+    return { top, bottom, left, right }
 end
 
 local function PaintButton(btn)
@@ -293,19 +320,7 @@ local function SkinButton(btn)
     fill:SetTexture("Interface\\Buttons\\WHITE8X8")
     btn.fill = fill
 
-    local inner = MakeEdges(btn, "BORDER", 0, 0, 0, 0.55)
-    for i = 1, 4 do
-        inner[i]:ClearAllPoints()
-    end
-    inner[1]:SetPoint("TOPLEFT", 1, -1)
-    inner[1]:SetPoint("TOPRIGHT", -1, -1)
-    inner[2]:SetPoint("BOTTOMLEFT", 1, 1)
-    inner[2]:SetPoint("BOTTOMRIGHT", -1, 1)
-    inner[3]:SetPoint("TOPLEFT", 1, -1)
-    inner[3]:SetPoint("BOTTOMLEFT", 1, 1)
-    inner[4]:SetPoint("TOPRIGHT", -1, -1)
-    inner[4]:SetPoint("BOTTOMRIGHT", -1, 1)
-
+    MakeEdges(btn, "BORDER", 0, 0, 0, 0.55, true)
     btn.edges = MakeRoundedEdges(btn, "ARTWORK")
 
     local hl = btn:CreateTexture(nil, "HIGHLIGHT")
@@ -532,26 +547,8 @@ local function DoPull(seconds, button)
         end
     end
 
-    Say(string.format("Pull in %d", seconds))
+    Say(format("Pull in %d", seconds))
     if not C_Timer or not C_Timer.NewTicker then
-        if C_Timer and C_Timer.After then
-            for step = 1, seconds do
-                local stepElapsed = step
-                C_Timer.After(stepElapsed, function()
-                    if serial ~= pullSerial then
-                        return
-                    end
-                    local left = seconds - stepElapsed
-                    if left <= 0 then
-                        activePullSec = nil
-                        activePullEnd = 0
-                        Say("GO!")
-                    else
-                        Say(tostring(left))
-                    end
-                end)
-            end
-        end
         return
     end
     local elapsed = 0
@@ -609,7 +606,7 @@ function XMB:EnsurePosition()
     end
     local w = ReadNumber(host:GetWidth(), 300) * s
     local uiW = ReadNumber(UIParent:GetWidth(), 1024)
-    db.headerLeft = math.floor((uiW - w) / 2 + 0.5)
+    db.headerLeft = floor((uiW - w) / 2 + 0.5)
     db.headerBottom = 200
     db.headerTop = db.headerBottom + COLLAPSED_H * s
 end
@@ -661,12 +658,17 @@ local function SnapToPixel(value, pixel)
     if not IsFiniteNumber(value) or not IsFiniteNumber(pixel) or pixel <= 0 then
         return value or 0
     end
-    return math.floor(value / pixel + 0.5) * pixel
+    return floor(value / pixel + 0.5) * pixel
 end
 
 function XMB:RestorePosition()
     local db, host = self.db, self.host
     if not db or not host then
+        return
+    end
+    if CombatLocked() then
+        self.pendingLayout = true
+        self.positionDirty = true
         return
     end
     self:EnsurePosition()
@@ -712,7 +714,7 @@ end
 
 function XMB:PlaceHeader(btn, x, h)
     btn:ClearAllPoints()
-    local y = PAD + math.floor((HEADER_H - h) / 2)
+    local y = PAD + floor((HEADER_H - h) / 2)
     if self.growUp then
         btn:SetPoint("BOTTOMLEFT", self.host, "BOTTOMLEFT", x, y)
     else
@@ -744,29 +746,35 @@ function XMB:UpdateActive()
         self.db.showWorld = showW
     end
     if showT and self.RefreshTargetMarks then
+        self.activeTargetMark = -1
         self:RefreshTargetMarks()
     end
 end
 
 function XMB:RefreshTargetMarks()
-    if not self.targetButtons or not FrameShown(self.host) or not FrameShown(self.targetRow) then
+    if not self.lastShowT or not self.targetButtons or not FrameShown(self.host) then
         return
     end
-    local markIndex
+    local markIndex = 0
     if type(GetRaidTargetIndex) == "function" then
         local ok, value = pcall(GetRaidTargetIndex, "target")
         if ok and IsFiniteNumber(value) and value > 0 and value <= 8 then
             markIndex = value
         end
     end
-    for i = 1, #self.targetButtons do
+    if markIndex == self.activeTargetMark then
+        return
+    end
+    self.activeTargetMark = markIndex
+    for i = 1, 8 do
         local btn = self.targetButtons[i]
-        local mark = btn.markIndex
-        local on = markIndex ~= nil and type(mark) == "number" and mark > 0 and mark == markIndex
-        if btn.isOn ~= on then
-            btn.isOn = on
-            btn.paintState = nil
-            PaintButton(btn)
+        if btn then
+            local on = (i == markIndex)
+            if btn.isOn ~= on then
+                btn.isOn = on
+                btn.paintState = nil
+                PaintButton(btn)
+            end
         end
     end
 end
@@ -786,27 +794,56 @@ function XMB:UpdateGrip()
     grip.b2:SetColorTexture(c[1], c[2], c[3], c[4])
 end
 
+local function RunQueuedLayout()
+    layoutQueued = false
+    if not XMB.host then
+        return
+    end
+    if CombatLocked() then
+        XMB.pendingLayout = true
+        return
+    end
+    XMB:Layout()
+end
+
 function XMB:RequestLayout()
     if layoutQueued then
         return
     end
     layoutQueued = true
-    local function Run()
-        layoutQueued = false
-        if not XMB.host then
-            return
-        end
-        if CombatLocked() then
-            XMB.pendingLayout = true
-            return
-        end
-        XMB:Layout()
-    end
     if C_Timer and C_Timer.After then
-        C_Timer.After(0, Run)
+        C_Timer.After(0, RunQueuedLayout)
     else
-        Run()
+        RunQueuedLayout()
     end
+end
+
+local function PackRow(self, row, buttons)
+    local shown = 0
+    local xOff = 0
+    if row and buttons then
+        for i = 1, #buttons do
+            local btn = buttons[i]
+            if btn and btn.IsShown and btn:IsShown() then
+                shown = shown + 1
+                btn:ClearAllPoints()
+                btn:SetPoint("LEFT", row, "LEFT", xOff, 0)
+                xOff = xOff + BTN + GAP
+            end
+        end
+    end
+    local strip = 0
+    if shown > 0 then
+        strip = xOff - GAP
+    end
+    if row then
+        row:SetWidth(strip > 0 and strip or 1)
+        row:SetHeight(BTN)
+    end
+    if strip > 0 then
+        return PAD + strip + PAD
+    end
+    return self.headerWidth or (PAD + PAD)
 end
 
 function XMB:Layout()
@@ -823,18 +860,37 @@ function XMB:Layout()
     local growChanged = (self.growUp ~= growUp)
     self.growUp = growUp
 
-    local showFlag = db.enableWorldMarks ~= false
-    local showStar = db.enableTargetMarks ~= false
-    local function PullOn(sec)
-        local value = db["showPull" .. sec]
-        if value == nil then
-            return db.showCountdown ~= false
+    local targetRowSig = 0
+    local bitVal = 1
+    for i = 1, 8 do
+        if db[TARGET_MARK_KEYS[i]] ~= false then
+            targetRowSig = targetRowSig + bitVal
         end
-        return value and true or false
+        bitVal = bitVal * 2
     end
-    local pull5 = PullOn(5)
-    local pull10 = PullOn(10)
-    local pull20 = PullOn(20)
+    if db.showTargetClear ~= false then
+        targetRowSig = targetRowSig + bitVal
+    end
+
+    local worldRowSig = 0
+    bitVal = 1
+    for i = 1, 8 do
+        if db[WORLD_MARK_KEYS[i]] ~= false then
+            worldRowSig = worldRowSig + bitVal
+        end
+        bitVal = bitVal * 2
+    end
+    if db.showWorldClear ~= false then
+        worldRowSig = worldRowSig + bitVal
+    end
+
+    local showFlag = (db.enableWorldMarks ~= false) and (worldRowSig > 0)
+    local showStar = (db.enableTargetMarks ~= false) and (targetRowSig > 0)
+
+    local defaultPull = db.showCountdown ~= false
+    local pull5 = (db.showPull5 == nil and defaultPull) or (db.showPull5 and true or false)
+    local pull10 = (db.showPull10 == nil and defaultPull) or (db.showPull10 and true or false)
+    local pull20 = (db.showPull20 == nil and defaultPull) or (db.showPull20 and true or false)
 
     local headerSig = (growUp and 1 or 0)
         + (pull5 and 2 or 0)
@@ -845,7 +901,8 @@ function XMB:Layout()
         + (showStar and 64 or 0)
         + (showFlag and 128 or 0)
 
-    if headerSig ~= self.headerSig then
+    local headerChanged = headerSig ~= self.headerSig
+    if headerChanged then
         local panel = host:GetAttribute("panel") or 0
         if (panel == 1 and not showStar) or (panel == 2 and not showFlag) then
             host:SetAttribute("panel", 0)
@@ -917,7 +974,7 @@ function XMB:Layout()
 
         self.headerWidth = x + PAD
 
-        local ruleY = PAD + HEADER_H + math.floor(ROW_GAP / 2)
+        local ruleY = PAD + HEADER_H + floor(ROW_GAP / 2)
         self.rule:ClearAllPoints()
         if growUp then
             self.rule:SetPoint("BOTTOMLEFT", host, "BOTTOMLEFT", PAD, ruleY)
@@ -931,36 +988,40 @@ function XMB:Layout()
         self.headerSig = headerSig
     end
 
-    local function PackRow(row, buttons)
-        local shown = 0
-        local xOff = 0
-        if row and buttons then
-            for i = 1, #buttons do
-                local btn = buttons[i]
-                if btn and btn.IsShown and btn:IsShown() then
-                    shown = shown + 1
-                    btn:ClearAllPoints()
-                    btn:SetPoint("LEFT", row, "LEFT", xOff, 0)
-                    xOff = xOff + BTN + GAP
+    if targetRowSig ~= self.targetRowSig or headerChanged then
+        if self.targetButtons and targetRowSig ~= self.targetRowSig then
+            for i = 1, 8 do
+                local btn = self.targetButtons[i]
+                if btn then
+                    btn:SetShown(db[TARGET_MARK_KEYS[i]] ~= false)
                 end
             end
+            local clearBtn = self.targetButtons[9]
+            if clearBtn then
+                clearBtn:SetShown(db.showTargetClear ~= false)
+            end
         end
-        local strip = 0
-        if shown > 0 then
-            strip = xOff - GAP
-        end
-        if row then
-            row:SetWidth(strip > 0 and strip or 1)
-            row:SetHeight(BTN)
-        end
-        if strip > 0 then
-            return PAD + strip + PAD
-        end
-        return self.headerWidth or (PAD + PAD)
+        self.targetRowSig = targetRowSig
+        self.targetRowWidth = PackRow(self, self.targetRow, self.targetButtons)
     end
 
-    self.targetRowWidth = PackRow(self.targetRow, self.targetButtons)
-    self.worldRowWidth = PackRow(self.worldRow, self.worldButtons)
+    if worldRowSig ~= self.worldRowSig or headerChanged then
+        if self.worldButtons and worldRowSig ~= self.worldRowSig then
+            for i = 1, 8 do
+                local btn = self.worldButtons[i]
+                if btn then
+                    btn:SetShown(db[WORLD_MARK_KEYS[i]] ~= false)
+                end
+            end
+            local clearBtn = self.worldButtons[9]
+            if clearBtn then
+                clearBtn:SetShown(db.showWorldClear ~= false)
+            end
+        end
+        self.worldRowSig = worldRowSig
+        self.worldRowWidth = PackRow(self, self.worldRow, self.worldButtons)
+    end
+
     local headerWidth = self.headerWidth or (PAD + ROW_W + PAD)
     host:SetAttribute("headerw", headerWidth)
     host:SetAttribute("troww", self.targetRowWidth)
@@ -1010,7 +1071,7 @@ function XMB:ApplyScale()
         scale = 1
     end
     local current = ReadNumber(self.host:GetScale(), nil)
-    if current and math.abs(current - scale) < 0.001 then
+    if current and abs(current - scale) < 0.001 then
         return
     end
     self.host:SetScale(scale)
@@ -1052,8 +1113,11 @@ end
 
 local function KnownLeader()
     local lead = SafeGroupFlag(UnitIsGroupLeader, "player")
+    if lead == true then
+        return true
+    end
     local assist = SafeGroupFlag(UnitIsGroupAssistant, "player")
-    if lead == true or assist == true then
+    if assist == true then
         return true
     end
     if lead == nil or assist == nil then
@@ -1075,18 +1139,18 @@ local function ShouldShowForGroupRule(db)
     end
     if mode == "leader" then
         local leader = KnownLeader()
-        if leader == true then
-            return true
-        end
-        if leader == nil then
-            return true
-        end
-        return false
+        return leader ~= false
     end
     local inGroup = SafeGroupFlag(IsInGroup)
+    if inGroup == true then
+        return true
+    end
     local inRaid = SafeGroupFlag(IsInRaid)
+    if inRaid == true then
+        return true
+    end
     local inInstance = SafeInInstance()
-    if inGroup == true or inRaid == true or inInstance == true then
+    if inInstance == true then
         return true
     end
     if inGroup == nil or inRaid == nil or inInstance == nil then
@@ -1118,9 +1182,6 @@ function XMB:ApplyVisibility()
         self.pendingLayout = true
         return
     end
-    if type(UnregisterStateDriver) == "function" then
-        pcall(UnregisterStateDriver, host, "visibility")
-    end
     local show = ShouldShowForGroupRule(self.db)
     if self.appliedShown == show and FrameShown(host) == show then
         return
@@ -1132,7 +1193,43 @@ function XMB:ApplyVisibility()
     self.appliedShown = show
 end
 
+local function RunQueuedVisibility()
+    visibilityQueued = false
+    if XMB.host then
+        XMB:ApplyVisibility()
+    end
+end
+
+function XMB:RequestVisibility()
+    local db = self.db
+    if not self.host or not db then
+        return
+    end
+    local mode = db.visibility
+    if mode ~= "group" and mode ~= "leader" and not db.onlyInGroup then
+        local want = db.enabled ~= false
+        if self.appliedShown == want then
+            return
+        end
+    end
+    if visibilityQueued then
+        return
+    end
+    visibilityQueued = true
+    if C_Timer and C_Timer.After then
+        C_Timer.After(0, RunQueuedVisibility)
+    else
+        RunQueuedVisibility()
+    end
+end
+
 function XMB:ApplySettings()
+    if self.SyncProfileDB then
+        self:SyncProfileDB()
+    end
+    if self.ApplyFlywheelSettings then
+        self:ApplyFlywheelSettings()
+    end
     if not self.host then
         return
     end
@@ -1223,6 +1320,16 @@ function XMB:StopMove()
     self:Layout()
 end
 
+local function RowActiveChanged()
+    XMB:UpdateActive()
+end
+
+local function OnRightClickOpenOptions(_, button)
+    if button == "RightButton" then
+        XMB:OpenOptions()
+    end
+end
+
 function XMB:CreateUI()
     local db = self.db
 
@@ -1236,10 +1343,17 @@ function XMB:CreateUI()
     host:EnableMouse(false)
     self.host = host
 
+    local core = _G.XiusCore
+    if core and type(core.RegisterMover) == "function" then
+        core:RegisterMover("Marks", host, "Marks Bar", function(unlocked)
+            XMB:SetLocked(not unlocked)
+        end)
+    end
+
     local bg = host:CreateTexture(nil, "BACKGROUND", nil, -8)
     bg:SetAllPoints()
     bg:SetColorTexture(COLOR.cardBg[1], COLOR.cardBg[2], COLOR.cardBg[3], COLOR.cardBg[4])
-    MakeEdges(host, "BORDER", COLOR.cardEdge[1], COLOR.cardEdge[2], COLOR.cardEdge[3], COLOR.cardEdge[4])
+    MakeEdges(host, "BORDER", COLOR.cardEdge[1], COLOR.cardEdge[2], COLOR.cardEdge[3], COLOR.cardEdge[4], false)
 
     local rule = host:CreateTexture(nil, "BORDER")
     rule:SetColorTexture(COLOR.rule[1], COLOR.rule[2], COLOR.rule[3], COLOR.rule[4])
@@ -1256,12 +1370,8 @@ if button == "RightButton" then
   return
 end
 ]] .. TOGGLE_WORLD)
-    -- OnMouseUp stays off the secure OnClick script, so combat toggles stay protected.
-    flag:SetScript("OnMouseUp", function(_, button)
-        if button == "RightButton" then
-            XMB:OpenOptions()
-        end
-    end)
+    -- PostClick runs after the secure click finishes, so combat toggles stay untainted.
+    flag:HookScript("PostClick", OnRightClickOpenOptions)
     BindHover(flag, "World marks", "Click to show or hide ground markers. Right-click for options.")
     self.flag = flag
 
@@ -1274,11 +1384,7 @@ if button == "RightButton" then
   return
 end
 ]] .. TOGGLE_TARGET)
-    star:SetScript("OnMouseUp", function(_, button)
-        if button == "RightButton" then
-            XMB:OpenOptions()
-        end
-    end)
+    star:HookScript("PostClick", OnRightClickOpenOptions)
     BindHover(star, "Target marks", "Click to show or hide target markers. Right-click for options.")
     self.star = star
 
@@ -1309,23 +1415,17 @@ end
     BindHover(ready, "Ready check", "Asks the group if they are ready. Leader or assistant only.")
     self.ready = ready
 
-    local role = MakeButton(host, nil, nil, ROLE_W)
+    -- Secure macro avoids protected InitiateRolePoll taint / combat blocks.
+    local role = MakeButton(host, "XiusMB_Role", "SecureActionButtonTemplate", ROLE_W)
     AddLabel(role, "R", COLOR.role)
-    role:RegisterForClicks("LeftButtonUp")
-    role:SetScript("OnClick", function()
-        if IsInGroup and not SafeBool(IsInGroup) then
-            XMB:Print("Join a party or raid to start a role check.")
-            return
-        end
-        if not InitiateRolePoll then
-            XMB:Print("Role check is not available right now.")
-            return
-        end
-        local ok = pcall(InitiateRolePoll)
-        if not ok then
-            XMB:Print("Role check is not available right now.")
-        end
-    end)
+    role:RegisterForClicks("AnyUp", "AnyDown")
+    role:SetAttribute("useOnKeyDown", false)
+    role:SetAttribute("type", "macro")
+    role:SetAttribute("macrotext", "/rolepoll")
+    role:SetAttribute("type1", "macro")
+    role:SetAttribute("*type1", "macro")
+    role:SetAttribute("macrotext1", "/rolepoll")
+    role:SetAttribute("*macrotext1", "/rolepoll")
     BindHover(role, "Role check", "Asks everyone to pick a role.")
     self.role = role
 
@@ -1351,11 +1451,7 @@ end
             XMB:StopMove()
         end
     end)
-    grip:SetScript("OnMouseUp", function(_, button)
-        if button == "RightButton" then
-            XMB:OpenOptions()
-        end
-    end)
+    grip:SetScript("OnMouseUp", OnRightClickOpenOptions)
     grip:SetScript("OnEnter", function(self)
         if XMB.db and XMB.db.isLocked then
             ShowTip(self, "Locked", "Unlock the bar from /xmb.")
@@ -1371,10 +1467,6 @@ end
         XMB:UpdateGrip()
     end)
     self.grip = grip
-
-    local function RowActiveChanged()
-        XMB:UpdateActive()
-    end
 
     local function MakeRow(name)
         local row = CreateFrame("Frame", name, host)
@@ -1546,6 +1638,10 @@ end
 local eventFrame = CreateFrame("Frame")
 local LOADED_TEXT = "Loaded. Click the flag for world marks, the star for target marks. /xmb for options."
 
+local function CreateBarCall()
+    XMB:CreateUI()
+end
+
 local function CreateBar()
     if XMB.host then
         XMB.pendingCreate = nil
@@ -1559,15 +1655,20 @@ local function CreateBar()
         return "combat"
     end
     XMB.pendingCreate = nil
-    local created, err = pcall(function()
-        XMB:CreateUI()
-    end)
+    local created, err = pcall(CreateBarCall)
     if not created then
         XMB.barFailed = true
         XMB:Print("Could not create the bar. " .. tostring(err))
         return "failed"
     end
     return "ready"
+end
+
+local function RunQueuedTargetMarkRefresh()
+    XMB.targetMarkRefreshQueued = nil
+    if XMB.RefreshTargetMarks then
+        XMB:RefreshTargetMarks()
+    end
 end
 
 eventFrame:RegisterEvent("ADDON_LOADED")
@@ -1600,22 +1701,15 @@ eventFrame:SetScript("OnEvent", function(_, event, name)
             XMB:ApplyVisibility()
         end
     elseif event == "GROUP_ROSTER_UPDATE" or event == "GROUP_JOINED" or event == "GROUP_LEFT" then
-        if XMB.host then
-            XMB:ApplyVisibility()
-        end
+        XMB:RequestVisibility()
     elseif event == "PLAYER_TARGET_CHANGED" or event == "RAID_TARGET_UPDATE" then
-        if not FrameShown(XMB.host) or not FrameShown(XMB.targetRow) then
+        if not XMB.lastShowT or not FrameShown(XMB.host) then
             return
         end
         -- These events can fire inside a secure raid-target macro. Read the index next frame.
-        if XMB.RefreshTargetMarks and not XMB.targetMarkRefreshQueued and C_Timer and C_Timer.After then
+        if not XMB.targetMarkRefreshQueued and C_Timer and C_Timer.After then
             XMB.targetMarkRefreshQueued = true
-            C_Timer.After(0, function()
-                XMB.targetMarkRefreshQueued = nil
-                if XMB.RefreshTargetMarks then
-                    XMB:RefreshTargetMarks()
-                end
-            end)
+            C_Timer.After(0, RunQueuedTargetMarkRefresh)
         end
     elseif event == "PLAYER_REGEN_DISABLED" then
         if XMB.moving then

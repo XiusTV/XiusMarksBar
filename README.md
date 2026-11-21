@@ -12,7 +12,7 @@ Settings open inside [Xius Core](https://github.com/XiusTV/XiusCore). The bar is
 - **Star:** All 8 raid target icons plus Clear Mark. Left-click marks your target. Click the same mark again, or right-click, to clear it.
 - **One row at a time:** Opening one row closes the other. Click the open icon again to collapse.
 - **Works in combat:** Opening, closing, and marking stay available mid-fight.
-- **Show only what you use:** The star, the flag, and each countdown can be hidden from the Marks page in Xius Core.
+- **Show only what you use:** The star, the flag, each mark, each world marker, both Clear buttons, and each countdown can be hidden from the Marks page in Xius Core.
 
 ### Mark wheel
 
@@ -57,15 +57,11 @@ Settings open inside [Xius Core](https://github.com/XiusTV/XiusCore). The bar is
 
 ## Configuration
 
-Open settings with `/xmb` or `/xius marks`. Xius Core has to be installed. The Marks page covers:
+Open settings with `/xmb` or `/xius marks`. Xius Core has to be installed. The Marks page uses three tabs:
 
-- **Bar:** Show the bar, lock position, visibility, and tooltips.
-- **Marks on the bar:** Show or hide the star and the flag.
-- **Countdown:** Show or hide 5, 10, and 20 separately.
-- **Group checks:** Ready check and role check.
-- **Mark wheel:** Unit wheel, world-marker wheel, and the double-click modifier.
-- **Expand direction:** Auto, always up, or always down.
-- **Size:** 60% to 160%.
+- **General:** Show the bar, visibility, lock, tooltips, size (60%–160%), and expand direction (auto, up, or down).
+- **Marks & Wheels:** Star and flag rows, each target mark 1–8, each world marker 1–8, both Clear buttons, unit wheel, world-marker wheel, and the double-click modifier.
+- **Timers & Checks:** 5 / 10 / 20 countdowns, ready check, and role check.
 
 Settings are saved for the account.
 

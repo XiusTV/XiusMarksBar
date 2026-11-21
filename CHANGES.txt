@@ -1,0 +1,8 @@
+Xius Marks Bar v1.4
+
+Release 1.4: Per-mark toggles, Core sub-tabs, safer combat and secret-value handling.
+
+Compared to GitHub 1.3.8 (2026-11-16):
+- Settings split into General / Marks & Wheels / Timers & Checks.
+- Show or hide each mark, each world marker, and both Clear buttons.
+- Secure role check, cleaner wheel hooks, profile sync, and combat-safe layout.

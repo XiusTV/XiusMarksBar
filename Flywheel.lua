@@ -5,11 +5,36 @@
     Key bindings open the same wheels during combat.
 ]]
 
-local ADDON, XMB = ...
+local addonName, ns = ...
+local ADDON, XMB = addonName, ns
 
 if XMB.disabled then
     return
 end
+
+local type = type
+local pcall = pcall
+local pairs = pairs
+local tostring = tostring
+local setmetatable = setmetatable
+local rad = math.rad
+local cos = math.cos
+local sin = math.sin
+local max = math.max
+local min = math.min
+local match = string.match
+local CreateFrame = CreateFrame
+local UIParent = UIParent
+local GetTime = GetTime
+local GetCursorPosition = GetCursorPosition
+local UnitExists = UnitExists
+local UnitGUID = UnitGUID
+local SetPortraitTexture = SetPortraitTexture
+local IsShiftKeyDown = IsShiftKeyDown
+local IsAltKeyDown = IsAltKeyDown
+local IsControlKeyDown = IsControlKeyDown
+local IsMouselooking = IsMouselooking
+local SpellIsTargeting = SpellIsTargeting
 
 local WHEEL = 168
 local HALF = WHEEL / 2
@@ -22,6 +47,35 @@ local SPOKE_HOVER = 44
 
 local IsSecret = XMB.IsSecret
 local IsFiniteNumber = XMB.IsFiniteNumber
+local MARK_TEXTURES = XMB.MARK_TEXTURES
+local MARK_NAMES = XMB.MARK_NAMES
+local WORLD_ICON = XMB.WORLD_ICON
+local WORLD_NAMES = XMB.WORLD_NAMES
+
+local NAMEPLATE_TOKENS = {}
+for n = 1, 40 do
+    NAMEPLATE_TOKENS[n] = "nameplate" .. n
+end
+
+local STATIC_UNIT_FRAMES = {
+    "PlayerFrame",
+    "TargetFrame",
+    "FocusFrame",
+    "PetFrame",
+    "TargetFrameToT",
+    "FocusFrameToT",
+    "PartyMemberFrame1",
+    "PartyMemberFrame2",
+    "PartyMemberFrame3",
+    "PartyMemberFrame4",
+    "Boss1TargetFrame",
+    "Boss2TargetFrame",
+    "Boss3TargetFrame",
+    "Boss4TargetFrame",
+    "Boss5TargetFrame",
+}
+
+local watcher = CreateFrame("Frame")
 
 local function CombatLocked()
     return XMB:CombatLocked()
@@ -37,10 +91,6 @@ local function Clock()
     end
     return 0
 end
-local MARK_TEXTURES = XMB.MARK_TEXTURES
-local MARK_NAMES = XMB.MARK_NAMES
-local WORLD_ICON = XMB.WORLD_ICON
-local WORLD_NAMES = XMB.WORLD_NAMES
 
 -- Weak tables avoid writing custom fields onto Blizzard unit frames or nameplates (prevents taint).
 local hookedFrames = setmetatable({}, { __mode = "k" })
@@ -86,6 +136,9 @@ for i = 0, 8 do
 end
 wheel:ClearAllPoints()
 wheel:SetPoint("CENTER", "$cursor", "BOTTOMLEFT", 0, 0)
+if block then
+  block:Show()
+end
 wheel:Show()
 ]]
 
@@ -122,6 +175,9 @@ for i = 0, 8 do
 end
 wheel:ClearAllPoints()
 wheel:SetPoint("CENTER", "$cursor", "BOTTOMLEFT", 0, 0)
+if block then
+  block:Show()
+end
 wheel:Show()
 ]]
 
@@ -191,8 +247,8 @@ local function CursorPoint()
     if not IsFiniteNumber(sh) or sh <= 0 then
         sh = 768
     end
-    x = math.max(HALF, math.min(sw - HALF, x))
-    y = math.max(HALF, math.min(sh - HALF, y))
+    x = max(HALF, min(sw - HALF, x))
+    y = max(HALF, min(sh - HALF, y))
     return x, y
 end
 
@@ -218,8 +274,8 @@ local function HideTip()
 end
 
 local function PlaceSpoke(parent, btn, index)
-    local angle = math.rad(90 - (index - 1) * 45)
-    btn:SetPoint("CENTER", parent, "CENTER", math.cos(angle) * RADIUS, math.sin(angle) * RADIUS)
+    local angle = rad(90 - (index - 1) * 45)
+    btn:SetPoint("CENTER", parent, "CENTER", cos(angle) * RADIUS, sin(angle) * RADIUS)
 end
 
 local function ArmMark(btn, kind, marker)
@@ -271,6 +327,9 @@ local function ArmMark(btn, kind, marker)
     btn:SetAttribute("action1", action)
     btn:SetAttribute("*action1", action)
     btn.xmbWheelMark = true
+    if XMB.BindSpokePostClick then
+        XMB.BindSpokePostClick(btn)
+    end
 end
 
 local function MakeActionButton(parent, name)
@@ -389,7 +448,7 @@ local function IsStableUnitToken(unit)
     if unit == "target" or unit == "focus" or unit == "player" or unit == "pet" then
         return true
     end
-    if unit:match("^party%d+$") or unit:match("^raid%d+$") or unit:match("^boss%d+$") or unit:match("^arena%d+$") then
+    if match(unit, "^party%d+$") or match(unit, "^raid%d+$") or match(unit, "^boss%d+$") or match(unit, "^arena%d+$") then
         return true
     end
     return false
@@ -511,6 +570,21 @@ function XMB:CloseFlywheel()
     end
 end
 
+-- Never call EnableMouse(false) on hidden buttons so the secure combat toggle can show them.
+local function ShowWheelList(list, shown)
+    if not list then
+        return
+    end
+    for i = 1, #list do
+        local btn = list[i]
+        if shown then
+            btn:Show()
+        else
+            btn:Hide()
+        end
+    end
+end
+
 function XMB:OpenFlywheel(kind, unit)
     local db = self.db
     local wheel = self.flywheel
@@ -542,11 +616,6 @@ function XMB:OpenFlywheel(kind, unit)
         self.flywheelPortrait:Hide()
     end
 
-    if CombatLocked() then
-        self:FlywheelCombatNotice()
-        return
-    end
-
     local block = self.flywheelBlocker
     if wheel:IsShown() and wheel:GetAttribute("mode") == kind then
         wheel:Hide()
@@ -566,50 +635,41 @@ function XMB:OpenFlywheel(kind, unit)
     wheel:ClearAllPoints()
     wheel:SetPoint("CENTER", UIParent, "BOTTOMLEFT", x, y)
 
-    -- Never call EnableMouse(false) on hidden buttons so the secure combat toggle can show them.
-    local function ShowList(list, shown)
-        if not list then
-            return
-        end
-        for i = 1, #list do
-            local btn = list[i]
-            if shown then
-                btn:Show()
-            else
-                btn:Hide()
-            end
-        end
-    end
     if kind == "world" then
-        ShowList(self.flywheelUnitButtons, false)
+        ShowWheelList(self.flywheelUnitButtons, false)
         if self.flywheelUnits then
             self.flywheelUnits:Hide()
         end
         if self.flywheelWorlds then
             self.flywheelWorlds:Show()
         end
-        ShowList(self.flywheelWorldButtons, true)
+        ShowWheelList(self.flywheelWorldButtons, true)
     else
-        ShowList(self.flywheelWorldButtons, false)
+        ShowWheelList(self.flywheelWorldButtons, false)
         if self.flywheelWorlds then
             self.flywheelWorlds:Hide()
         end
         if self.flywheelUnits then
             self.flywheelUnits:Show()
         end
-        ShowList(self.flywheelUnitButtons, true)
+        ShowWheelList(self.flywheelUnitButtons, true)
+    end
+    if block then
+        block:Show()
     end
     wheel:Show()
     self.flywheelOpenedAt = Clock()
+end
+
+local function RawEqual(a, b)
+    return a == b
 end
 
 local function SafeSame(a, b)
     if IsSecret(a) or IsSecret(b) or a == nil or b == nil then
         return false
     end
-    local ok, same = pcall(function()
-        return a == b
-    end)
+    local ok, same = pcall(RawEqual, a, b)
     if not ok or IsSecret(same) then
         return false
     end
@@ -617,16 +677,13 @@ local function SafeSame(a, b)
 end
 
 local function MovedTooFar(x1, y1, x2, y2, limit)
-    limit = limit or MOVE_LIMIT
-    local ok, far = pcall(function()
-        local dx = x1 - x2
-        local dy = y1 - y2
-        return (dx * dx + dy * dy) > (limit * limit)
-    end)
-    if not ok or IsSecret(far) then
+    if not IsFiniteNumber(x1) or not IsFiniteNumber(y1) or not IsFiniteNumber(x2) or not IsFiniteNumber(y2) then
         return false
     end
-    return far
+    limit = limit or MOVE_LIMIT
+    local dx = x1 - x2
+    local dy = y1 - y2
+    return (dx * dx + dy * dy) > (limit * limit)
 end
 
 local function HasUnit(value)
@@ -634,6 +691,14 @@ local function HasUnit(value)
         return true
     end
     return type(value) == "string" and value ~= ""
+end
+
+local function ReadFrameUnitFields(frame)
+    return frame.unit or frame.namePlateUnitToken or frame.displayedUnit
+end
+
+local function ReadUnitFrame(plate)
+    return plate.UnitFrame
 end
 
 local function UnitFromFrame(frame)
@@ -644,9 +709,7 @@ local function UnitFromFrame(frame)
     if HasUnit(mapped) then
         return mapped
     end
-    local okU, unitField = pcall(function()
-        return frame.unit or frame.namePlateUnitToken or frame.displayedUnit
-    end)
+    local okU, unitField = pcall(ReadFrameUnitFields, frame)
     if okU and HasUnit(unitField) then
         return unitField
     end
@@ -660,29 +723,30 @@ local function UnitFromFrame(frame)
     return nil
 end
 
-local function CursorOverFrame(frame, padX, padAbove, padBelow)
+local function CheckCursorOverFrame(frame, cx, cy, padX, padAbove, padBelow)
+    if not frame:IsVisible() then
+        return false
+    end
+    local left, bottom = frame:GetLeft(), frame:GetBottom()
+    local width, height = frame:GetWidth(), frame:GetHeight()
+    local scale = frame:GetEffectiveScale() or 1
+    if not IsFiniteNumber(left) or not IsFiniteNumber(bottom)
+        or not IsFiniteNumber(width) or not IsFiniteNumber(height)
+        or not IsFiniteNumber(scale) or scale <= 0 then
+        return false
+    end
+    local l = (left - padX) * scale
+    local r = (left + width + padX) * scale
+    local b = (bottom - padBelow) * scale
+    local t = (bottom + height + padAbove) * scale
+    return cx >= l and cx <= r and cy >= b and cy <= t
+end
+
+local function CursorOverFrame(frame, cx, cy, padX, padAbove, padBelow)
     if not ReadableFrame(frame) or not frame.GetLeft or not frame.IsVisible then
         return false
     end
-    local ok, inside = pcall(function()
-        if not frame:IsVisible() then
-            return false
-        end
-        local left, bottom = frame:GetLeft(), frame:GetBottom()
-        local width, height = frame:GetWidth(), frame:GetHeight()
-        local scale = frame:GetEffectiveScale() or 1
-        if not IsFiniteNumber(left) or not IsFiniteNumber(bottom)
-            or not IsFiniteNumber(width) or not IsFiniteNumber(height)
-            or not IsFiniteNumber(scale) or scale <= 0 then
-            return false
-        end
-        local cx, cy = CursorRaw()
-        local l = (left - padX) * scale
-        local r = (left + width + padX) * scale
-        local b = (bottom - padBelow) * scale
-        local t = (bottom + height + padAbove) * scale
-        return cx >= l and cx <= r and cy >= b and cy <= t
-    end)
+    local ok, inside = pcall(CheckCursorOverFrame, frame, cx, cy, padX, padAbove, padBelow)
     return ok and not IsSecret(inside) and inside or false
 end
 
@@ -694,23 +758,17 @@ local function PlateUnit(plate)
     if UnitIsReal(unit) then
         return unit
     end
-    local okP, token = pcall(function()
-        return plate.namePlateUnitToken or plate.unit
-    end)
+    local okP, token = pcall(ReadFrameUnitFields, plate)
     if okP and UnitIsReal(token) then
         return token
     end
-    local okUF, uf = pcall(function()
-        return plate.UnitFrame
-    end)
+    local okUF, uf = pcall(ReadUnitFrame, plate)
     if okUF and ReadableFrame(uf) then
         unit = plateUnits[uf]
         if UnitIsReal(unit) then
             return unit
         end
-        local okUFT, ufToken = pcall(function()
-            return uf.unit or uf.namePlateUnitToken or uf.displayedUnit
-        end)
+        local okUFT, ufToken = pcall(ReadFrameUnitFields, uf)
         if okUFT and UnitIsReal(ufToken) then
             return ufToken
         end
@@ -719,7 +777,7 @@ local function PlateUnit(plate)
         return nil
     end
     for n = 1, 40 do
-        local candidate = "nameplate" .. n
+        local candidate = NAMEPLATE_TOKENS[n]
         if UnitIsReal(candidate) then
             local ok, got = pcall(C_NamePlate.GetNamePlateForUnit, candidate)
             if ok and got == plate then
@@ -764,14 +822,13 @@ local function UnitUnderCursor()
     if not ok or IsSecret(plates) or type(plates) ~= "table" then
         return nil
     end
+    local cx, cy = CursorRaw()
     for i = 1, #plates do
         local plate = plates[i]
         if ReadableFrame(plate) then
-            local okUF, visual = pcall(function()
-                return plate.UnitFrame
-            end)
+            local okUF, visual = pcall(ReadUnitFrame, plate)
             visual = (okUF and ReadableFrame(visual)) and visual or plate
-            if CursorOverFrame(visual, 8, 6, 6) or CursorOverFrame(plate, 8, 6, 6) then
+            if CursorOverFrame(visual, cx, cy, 8, 6, 6) or (visual ~= plate and CursorOverFrame(plate, cx, cy, 8, 6, 6)) then
                 local unit = PlateUnit(plate)
                 if UnitIsReal(unit) then
                     return unit
@@ -911,6 +968,9 @@ function XMB:NoteFlywheelClick(kind, unit)
     if not db or CombatLocked() then
         return
     end
+    if not db.flywheelUnits and not db.flywheelWorld then
+        return
+    end
     if not FlywheelModifierMatches(db) then
         return
     end
@@ -924,13 +984,7 @@ function XMB:NoteFlywheelClick(kind, unit)
         kind = "world"
         unit = nil
     end
-    local now = 0
-    if type(GetTime) == "function" then
-        local ok, value = pcall(GetTime)
-        if ok and IsFiniteNumber(value) then
-            now = value
-        end
-    end
+    local now = Clock()
     local x, y = CursorRaw()
     if hasPendingClick and (now - pendingClick.time) < SAME_CLICK then
         if kind == "unit" and UnitIsReal(unit) then
@@ -952,36 +1006,29 @@ function XMB:NoteFlywheelClick(kind, unit)
     end
 end
 
-local function HookUnitClick(frame)
-    if not ReadableFrame(frame) or hookedFrames[frame] or not frame.HookScript then
-        return
-    end
+local function OnHookedFrameMouseUp(self, button)
     if CombatLocked() then
-        pendingHooks[frame] = true
         return
     end
-    pendingHooks[frame] = nil
-    local ok = pcall(frame.HookScript, frame, "OnMouseUp", function(self, button)
-        if CombatLocked() then
-            return
+    if button == "RightButton" then
+        if XMB.flywheel and XMB.flywheel:IsShown() and not IsOverWheel() then
+            XMB:CloseFlywheel()
         end
-        if button == "RightButton" then
-            if XMB.flywheel and XMB.flywheel:IsShown() and not IsOverWheel() then
-                XMB:CloseFlywheel()
-            end
-            return
-        end
-        if button ~= "LeftButton" then
-            return
-        end
-        local unit = UnitFromFrame(self)
-        if UnitIsReal(unit) then
-            XMB:NoteFlywheelClick("unit", unit)
-        end
-    end)
-    if ok then
-        hookedFrames[frame] = true
+        return
     end
+    if button ~= "LeftButton" then
+        return
+    end
+    local unit = UnitFromFrame(self)
+    if UnitIsReal(unit) then
+        XMB:NoteFlywheelClick("unit", unit)
+    end
+end
+
+local function HookUnitClick(frame)
+    -- Do not HookScript Blizzard unit frames: that taints their click path.
+    -- SecureUnitButton_OnClick / SecureUnitButtonMixin hooks below are enough.
+    return
 end
 
 local function FlushUnitHooks()
@@ -994,88 +1041,46 @@ local function FlushUnitHooks()
 end
 
 local function HookStaticUnitFrames()
-    local names = {
-        "PlayerFrame",
-        "TargetFrame",
-        "FocusFrame",
-        "PetFrame",
-        "TargetFrameToT",
-        "FocusFrameToT",
-    }
-    for i = 1, 4 do
-        names[#names + 1] = "PartyMemberFrame" .. i
-    end
-    for i = 1, 5 do
-        names[#names + 1] = "Boss" .. i .. "TargetFrame"
-    end
-    for i = 1, #names do
-        HookUnitClick(_G[names[i]])
+    for i = 1, #STATIC_UNIT_FRAMES do
+        HookUnitClick(_G[STATIC_UNIT_FRAMES[i]])
     end
 end
 
 local function HookNameplate(unit)
-    if not unit then
+    if unit == nil or IsSecret(unit) or type(unit) ~= "string" then
         return
     end
-    pcall(function()
-        local plate
-        if C_NamePlate and C_NamePlate.GetNamePlateForUnit then
-            plate = C_NamePlate.GetNamePlateForUnit(unit)
-        elseif GetNamePlateForUnit then
-            plate = GetNamePlateForUnit(unit)
+    local plate
+    if C_NamePlate and C_NamePlate.GetNamePlateForUnit then
+        local ok, got = pcall(C_NamePlate.GetNamePlateForUnit, unit)
+        if ok then
+            plate = got
         end
-        if not ReadableFrame(plate) then
-            return
+    elseif GetNamePlateForUnit then
+        local ok, got = pcall(GetNamePlateForUnit, unit)
+        if ok then
+            plate = got
         end
-        plateUnits[plate] = unit
-        HookUnitClick(plate)
-        local okUF, uf = pcall(function()
-            return plate.UnitFrame
-        end)
-        if okUF and ReadableFrame(uf) then
-            plateUnits[uf] = unit
-            HookUnitClick(uf)
-        end
-    end)
+    end
+    if not ReadableFrame(plate) then
+        return
+    end
+    plateUnits[plate] = unit
+    HookUnitClick(plate)
+    local okUF, uf = pcall(ReadUnitFrame, plate)
+    if okUF and ReadableFrame(uf) then
+        plateUnits[uf] = unit
+        HookUnitClick(uf)
+    end
 end
 
 local function HookExistingPlates()
     for n = 1, 40 do
-        local token = "nameplate" .. n
+        local token = NAMEPLATE_TOKENS[n]
         if UnitIsReal(token) then
             HookNameplate(token)
         end
     end
-end
-
-local function MigrateOldBindings()
-    if CombatLocked() or not GetBindingKey or not SetBinding then
-        return
-    end
-    pcall(function()
-        local mapping = {
-            XIUSMB_UNIT_WHEEL = "CLICK XiusMB_FlywheelToggle:LeftButton",
-            XIUSMB_WORLD_WHEEL = "CLICK XiusMB_FlywheelWorldToggle:LeftButton",
-        }
-        local changed = false
-        for oldCmd, newCmd in pairs(mapping) do
-            local k1, k2 = GetBindingKey(oldCmd)
-            if k1 and k1 ~= "" then
-                SetBinding(k1, newCmd)
-                changed = true
-            end
-            if k2 and k2 ~= "" then
-                SetBinding(k2, newCmd)
-                changed = true
-            end
-        end
-        if changed and SaveBindings and GetCurrentBindingSet then
-            local set = GetCurrentBindingSet()
-            if set == 1 or set == 2 then
-                SaveBindings(set)
-            end
-        end
-    end)
 end
 
 function XMB:CreateFlywheel()
@@ -1190,6 +1195,10 @@ end
         HideTip()
     end
 
+    local function CenterEnter(self)
+        ShowTip(self, self.tipTitle, self.tipLine)
+    end
+
     local function AddSpokeIcon(btn, texture, isWorld)
         btn:SetSize(SPOKE_SIZE, SPOKE_SIZE)
         local icon = btn:CreateTexture(nil, "ARTWORK")
@@ -1219,9 +1228,7 @@ end
         if marker == 0 then
             btn:SetSize(64, 64)
             btn:SetPoint("CENTER", parent, "CENTER", 0, 0)
-            btn:SetScript("OnEnter", function(self)
-                ShowTip(self, self.tipTitle, self.tipLine)
-            end)
+            btn:SetScript("OnEnter", CenterEnter)
             btn:SetScript("OnLeave", HideTip)
         else
             AddSpokeIcon(btn, texture, kind == "world")
@@ -1337,6 +1344,7 @@ end
 
     wheel:SetScript("OnShow", function(self)
         XMB.flywheelOpenedAt = Clock()
+        pcall(watcher.RegisterEvent, watcher, "GLOBAL_MOUSE_UP")
         if self:GetAttribute("mode") ~= "world" then
             XMB:RefreshFlywheelPortrait()
         end
@@ -1346,6 +1354,7 @@ end
     end)
 
     wheel:SetScript("OnHide", function()
+        pcall(watcher.UnregisterEvent, watcher, "GLOBAL_MOUSE_UP")
         HideTip()
         ResetWheelIcons()
         if escFrame and escFrame:IsShown() then
@@ -1362,36 +1371,57 @@ end
     end)
 end
 
-local function OnPostSecureActionClick(self, button, down)
-    if not self or down then
+-- Do not hooksecurefunc SecureActionButton_OnClick — that taints the secure
+-- click path. Close the wheel from an insecure PostClick / deferred timer only.
+local function CloseWheelAfterMark()
+    if CombatLocked() then
         return
-    end
-    if self.xmbWorldMarker and button == "LeftButton" and XMB.NotifyWorldMarkerRequirement then
-        XMB:NotifyWorldMarkerRequirement()
-    end
-    if not self.xmbWheelMark then
-        return
-    end
-    if self.icon then
-        self.icon:SetSize(SPOKE_SIZE, SPOKE_SIZE)
     end
     local wheel = XMB.flywheel
-    if not wheel or not wheel:IsShown() or CombatLocked() then
-        return
+    if wheel and wheel:IsShown() then
+        wheel:Hide()
     end
-    wheel:Hide()
     local block = XMB.flywheelBlocker
     if block and block:IsShown() then
         block:Hide()
     end
 end
 
-if type(hooksecurefunc) == "function" then
-    if SecureActionButton_OnClick then
-        hooksecurefunc("SecureActionButton_OnClick", OnPostSecureActionClick)
+local function BindSpokePostClick(btn)
+    if not btn or btn.xmbPostClickBound then
+        return
     end
-    if SecureActionButtonMixin and type(SecureActionButtonMixin.OnClick) == "function" then
-        hooksecurefunc(SecureActionButtonMixin, "OnClick", OnPostSecureActionClick)
+    btn.xmbPostClickBound = true
+    btn:HookScript("OnClick", function(self, button, down)
+        if down then
+            return
+        end
+        if self.xmbWorldMarker and button == "LeftButton" and XMB.NotifyWorldMarkerRequirement then
+            XMB:NotifyWorldMarkerRequirement()
+        end
+        if not self.xmbWheelMark then
+            return
+        end
+        if self.icon then
+            self.icon:SetSize(SPOKE_SIZE, SPOKE_SIZE)
+        end
+        if CombatLocked() then
+            return
+        end
+        if C_Timer and C_Timer.After then
+            C_Timer.After(0, CloseWheelAfterMark)
+        else
+            CloseWheelAfterMark()
+        end
+    end)
+end
+
+XMB.BindSpokePostClick = BindSpokePostClick
+
+local function HandleUnitButtonClick(frame)
+    local unit = UnitFromFrame(frame)
+    if UnitIsReal(unit) then
+        XMB:NoteFlywheelClick("unit", unit)
     end
 end
 
@@ -1399,12 +1429,7 @@ local function OnUnitButtonClick(self, button)
     if CombatLocked() or button ~= "LeftButton" then
         return
     end
-    pcall(function()
-        local unit = UnitFromFrame(self)
-        if UnitIsReal(unit) then
-            XMB:NoteFlywheelClick("unit", unit)
-        end
-    end)
+    pcall(HandleUnitButtonClick, self)
 end
 
 if type(hooksecurefunc) == "function" then
@@ -1416,10 +1441,19 @@ if type(hooksecurefunc) == "function" then
     end
 end
 
-if CompactUnitFrame_SetUnit then
-    hooksecurefunc("CompactUnitFrame_SetUnit", function(frame)
-        HookUnitClick(frame)
-    end)
+-- CompactUnitFrame_SetUnit HookScript path removed: it tainted party/raid clicks.
+-- SecureUnitButton_OnClick / SecureUnitButtonMixin hooks above cover unit clicks.
+
+local function HandleWorldLeftClick()
+    local db = XMB.db
+    if db and not db.flywheelUnits and not db.flywheelWorld then
+        return
+    end
+    if UnitIsReal("mouseover") then
+        XMB:NoteFlywheelClick("unit", "mouseover")
+    else
+        XMB:NoteFlywheelClick("world")
+    end
 end
 
 if WorldFrame and WorldFrame.HookScript then
@@ -1436,22 +1470,16 @@ if WorldFrame and WorldFrame.HookScript then
         if button ~= "LeftButton" then
             return
         end
-        pcall(function()
-            local db = XMB.db
-            if db and not db.flywheelUnits and not db.flywheelWorld then
-                return
-            end
-            if UnitIsReal("mouseover") then
-                XMB:NoteFlywheelClick("unit", "mouseover")
-            else
-                XMB:NoteFlywheelClick("world")
-            end
-        end)
+        pcall(HandleWorldLeftClick)
     end
     local hooked = pcall(WorldFrame.HookScript, WorldFrame, "OnMouseUp", OnWorldClick)
     if not hooked then
         pcall(WorldFrame.HookScript, WorldFrame, "OnMouseDown", OnWorldClick)
     end
+end
+
+local function CreateFlywheelCall()
+    XMB:CreateFlywheel()
 end
 
 function XMB:EnsureFlywheel()
@@ -1463,16 +1491,13 @@ function XMB:EnsureFlywheel()
         return
     end
     self.pendingFlywheel = nil
-    local created, err = pcall(function()
-        self:CreateFlywheel()
-    end)
+    local created, err = pcall(CreateFlywheelCall)
     if not created then
         self.flywheelFailed = true
         self:Print("Could not create the mark wheel. " .. tostring(err))
     end
 end
 
-local watcher = CreateFrame("Frame")
 watcher:RegisterEvent("ADDON_LOADED")
 watcher:RegisterEvent("PLAYER_ENTERING_WORLD")
 watcher:RegisterEvent("PLAYER_LEAVING_WORLD")
@@ -1480,25 +1505,25 @@ watcher:RegisterEvent("PLAYER_REGEN_DISABLED")
 watcher:RegisterEvent("PLAYER_REGEN_ENABLED")
 watcher:RegisterEvent("PLAYER_TARGET_CHANGED")
 pcall(watcher.RegisterEvent, watcher, "NAME_PLATE_UNIT_ADDED")
-pcall(watcher.RegisterEvent, watcher, "GLOBAL_MOUSE_UP")
 local hookedCompact = CompactUnitFrame_SetUnit and true or false
+local selfLoaded = false
 
 watcher:SetScript("OnEvent", function(_, event, arg1)
     if event == "ADDON_LOADED" then
         if arg1 == ADDON then
+            selfLoaded = true
             XMB:EnsureFlywheel()
             HookStaticUnitFrames()
         end
-        if not hookedCompact and CompactUnitFrame_SetUnit then
+        if CompactUnitFrame_SetUnit then
             hookedCompact = true
-            hooksecurefunc("CompactUnitFrame_SetUnit", function(frame)
-                HookUnitClick(frame)
-            end)
+        end
+        if selfLoaded and hookedCompact then
+            watcher:UnregisterEvent("ADDON_LOADED")
         end
     elseif event == "NAME_PLATE_UNIT_ADDED" then
         HookNameplate(arg1)
     elseif event == "PLAYER_ENTERING_WORLD" then
-        MigrateOldBindings()
         HookStaticUnitFrames()
         HookExistingPlates()
     elseif event == "PLAYER_LEAVING_WORLD" then
@@ -1513,16 +1538,14 @@ watcher:SetScript("OnEvent", function(_, event, arg1)
             XMB:RefreshFlywheelPortrait()
         end
     elseif event == "GLOBAL_MOUSE_UP" then
-        if CombatLocked() then
+        if not (XMB.flywheel and XMB.flywheel:IsShown()) or CombatLocked() then
             return
         end
         if arg1 ~= "LeftButton" and arg1 ~= "RightButton" then
             return
         end
-        if XMB.flywheel and XMB.flywheel:IsShown() then
-            if (Clock() - (XMB.flywheelOpenedAt or 0)) > 0.05 and not IsOverWheel() then
-                XMB:CloseFlywheel()
-            end
+        if (Clock() - (XMB.flywheelOpenedAt or 0)) > 0.05 and not IsOverWheel() then
+            XMB:CloseFlywheel()
         end
     elseif event == "PLAYER_REGEN_DISABLED" then
         hasPendingClick = false

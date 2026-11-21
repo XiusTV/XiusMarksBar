@@ -2,6 +2,31 @@
 
 All notable changes to Xius Marks Bar are documented in this file.
 
+## 1.4
+
+### Added
+- Settings page uses three sub-tabs in Xius Core: General, Marks & Wheels, and Timers & Checks.
+- Each target mark (1–8), each world marker (1–8), and both Clear buttons can be shown or hidden on their own.
+- Xius Core mover registration for the Marks Bar unlock flow.
+- Profile sync keeps `XMB.db`, `XiusMarksBarDB`, and `XiusUIDB.marks` on the same table when Xius Core switches profiles.
+- Queued visibility updates so group and leader rules refresh without extra work every frame.
+
+### Changed
+- TOC title uses the gold Xius Marks Bar styling. Main TOC also lists Forever (`16001`) and loads for standard, forever, and camelot.
+- `LoadSavedVariablesFirst` is set so account settings are ready before the bar builds.
+- Removed leftover XiusUI / XiusUISettingsLib checks. Xius Core is the only settings host.
+- Role check uses a secure `/rolepoll` button so it does not hit protected `InitiateRolePoll` blocks.
+- Flag and star open options from `PostClick` instead of `OnMouseUp`, which keeps combat toggles clean.
+- Mark rows pack only the buttons that are turned on, so the strip stays tight when marks are hidden.
+- Secret-value helpers treat a failed `issecretvalue` / `canaccessvalue` call as secret, so Forever never does math on restricted values.
+
+### Fixed
+- Layout and position restore wait out combat lockdown instead of fighting secure frames.
+- Target-mark highlights skip redraw when the active mark has not changed.
+- Mark wheel no longer hooks Blizzard unit frames or `SecureActionButton_OnClick` (those paths tainted party, raid, and mark clicks). Wheel spokes close with an insecure `PostClick` / deferred timer instead.
+- Compact unit frame `HookScript` path removed; unit clicks use the secure unit-button hooks only.
+- Visibility for group or leader no longer drops the bar when leader/assistant status is unknown.
+
 ## 1.3.8
 
 ### Added
