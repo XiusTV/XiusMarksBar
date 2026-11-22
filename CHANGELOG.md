@@ -2,6 +2,13 @@
 
 All notable changes to Xius Marks Bar are documented in this file.
 
+## 1.4.2
+
+### Fixed
+- Right-clicking the target frame opens Blizzard's unit menu again (Whisper, Inspect, Trade, Set Focus, Raid Target Icon, and the rest).
+- TargetFrame is no longer hooked with `HookScript`. Left double-click uses global mouse monitoring instead, so UnitPopup stays untainted.
+- Left double-click on the target frame still opens the radial mark wheel out of combat when the option is enabled.
+
 ## 1.4.1
 
 ### Fixed

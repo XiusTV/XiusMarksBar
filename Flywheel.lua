@@ -3,6 +3,8 @@
     Double-click a unit for a radial target-mark wheel.
     Double-click the ground for a radial world-marker wheel.
     Key bindings open the same wheels during combat.
+    TargetFrame uses global mouse monitoring only — never HookScript on TargetFrame
+    (HookScript taints the Forever/Retail UnitPopup right-click menu).
 ]]
 
 local addonName, ns = ...
@@ -35,6 +37,7 @@ local IsAltKeyDown = IsAltKeyDown
 local IsControlKeyDown = IsControlKeyDown
 local IsMouselooking = IsMouselooking
 local SpellIsTargeting = SpellIsTargeting
+local IsMouseButtonDown = IsMouseButtonDown
 
 local WHEEL = 168
 local HALF = WHEEL / 2
@@ -95,12 +98,15 @@ end
 
 -- Weak tables avoid writing custom fields onto Blizzard unit frames or nameplates (prevents taint).
 local hookedFrames = setmetatable({}, { __mode = "k" })
-local hookedTargetFrames = setmetatable({}, { __mode = "k" })
 local plateUnits = setmetatable({}, { __mode = "k" })
 local pendingHooks = setmetatable({}, { __mode = "k" })
+-- TargetFrame double-click is detected globally — never HookScript TargetFrame (taints UnitPopup).
 local targetFrameClickAt = 0
 local targetFramePulseAt = 0
 local targetFrameOpenAt = 0
+local targetFrameLeftWasDown = false
+local targetFrameMonitor = CreateFrame("Frame")
+local targetFrameUsesGlobalMouse = false
 
 local UNIT_TOGGLE_SNIPPET = [[
 if self:GetAttribute("enabled") == 0 then
@@ -370,6 +376,9 @@ function XMB:ApplyFlywheelSettings()
         return
     end
     self.pendingFlywheelSettings = nil
+    if self.UpdateTargetFrameMonitor then
+        self:UpdateTargetFrameMonitor()
+    end
     if self.flywheelToggle then
         self.flywheelToggle:SetAttribute("enabled", (db and db.flywheelUnits) and 1 or 0)
     end
@@ -1057,7 +1066,6 @@ local function OpenTargetFrameWheel()
         return
     end
     local now = Clock()
-    -- OnDoubleClick and the MouseDown/PostClick timer can both fire for one gesture.
     if (now - targetFrameOpenAt) < 0.2 then
         return
     end
@@ -1068,11 +1076,80 @@ local function OpenTargetFrameWheel()
     XMB:OpenFlywheel("unit", "target")
 end
 
--- SecureUnitButtonTemplate often eats OnDoubleClick; time LeftButton presses instead.
-local function NoteTargetFrameClick(button)
-    if button ~= "LeftButton" then
-        return
+-- True when the cursor is over TargetFrame / its container / portrait region.
+-- Never reads or writes TargetFrame scripts — only IsMouseOver / GetMouseFoci.
+local function CursorOverTargetFrame()
+    local tf = _G.TargetFrame
+    if not ReadableFrame(tf) then
+        return false
     end
+    if tf.IsShown and not tf:IsShown() then
+        return false
+    end
+    if tf.IsMouseOver then
+        local ok, over = pcall(tf.IsMouseOver, tf)
+        if ok and over == true then
+            return true
+        end
+    end
+    local container = tf.TargetFrameContainer
+    if ReadableFrame(container) and container.IsMouseOver then
+        local ok, over = pcall(container.IsMouseOver, container)
+        if ok and over == true then
+            return true
+        end
+    end
+    local foci = GetMouseFocusFrames()
+    if not foci then
+        return false
+    end
+    for i = 1, #foci do
+        local frame = foci[i]
+        local depth = 0
+        while ReadableFrame(frame) and depth < 16 do
+            depth = depth + 1
+            if frame == tf or frame == container or frame == _G.TargetFramePortrait then
+                return true
+            end
+            if not frame.GetParent then
+                break
+            end
+            local ok, parent = pcall(frame.GetParent, frame)
+            if not ok then
+                break
+            end
+            frame = parent
+        end
+    end
+    return false
+end
+
+local function IsUnderTargetFrame(frame)
+    local tf = _G.TargetFrame
+    if not ReadableFrame(tf) or not ReadableFrame(frame) then
+        return false
+    end
+    local depth = 0
+    while ReadableFrame(frame) and depth < 16 do
+        depth = depth + 1
+        if frame == tf then
+            return true
+        end
+        if not frame.GetParent then
+            break
+        end
+        local ok, parent = pcall(frame.GetParent, frame)
+        if not ok then
+            break
+        end
+        frame = parent
+    end
+    return false
+end
+
+-- Rising-edge LeftButton press over TargetFrame within 0.35s opens the wheel.
+-- RightButton is never observed here, so UnitPopup stays untainted.
+local function NoteTargetFrameLeftClick()
     if CombatLocked() then
         targetFrameClickAt = 0
         targetFramePulseAt = 0
@@ -1082,8 +1159,11 @@ local function NoteTargetFrameClick(button)
         targetFrameClickAt = 0
         return
     end
+    if not CursorOverTargetFrame() then
+        targetFrameClickAt = 0
+        return
+    end
     local now = Clock()
-    -- One physical click can raise OnMouseDown and PostClick; count it once.
     if (now - targetFramePulseAt) < SAME_CLICK then
         return
     end
@@ -1096,93 +1176,69 @@ local function NoteTargetFrameClick(button)
     targetFrameClickAt = now
 end
 
-local function OnTargetFrameDoubleClick(_, button)
-    if button ~= "LeftButton" then
-        return
-    end
-    OpenTargetFrameWheel()
-end
-
-local function OnTargetFrameMouseDown(_, button)
-    NoteTargetFrameClick(button)
-end
-
-local function OnTargetFramePostClick(_, button, down)
-    if down then
-        return
-    end
-    NoteTargetFrameClick(button)
-end
-
-local function AddTargetFrameHookCandidate(list, frame)
-    if not ReadableFrame(frame) or not frame.HookScript or hookedTargetFrames[frame] then
-        return
-    end
-    list[#list + 1] = frame
-end
-
-local function CollectTargetFrameHookTargets()
-    local list = {}
-    local tf = _G.TargetFrame
-    AddTargetFrameHookCandidate(list, tf)
-    if tf then
-        local container = tf.TargetFrameContainer
-        AddTargetFrameHookCandidate(list, container)
-        if container then
-            -- Portrait is often a Texture; only hook if it is a real mouse frame.
-            AddTargetFrameHookCandidate(list, container.Portrait)
-            AddTargetFrameHookCandidate(list, container.PortraitContainer)
-        end
-        AddTargetFrameHookCandidate(list, tf.portrait)
-        AddTargetFrameHookCandidate(list, tf.Portrait)
-        local content = tf.TargetFrameContent
-        AddTargetFrameHookCandidate(list, content)
-        if content then
-            AddTargetFrameHookCandidate(list, content.TargetFrameContentMain)
-            AddTargetFrameHookCandidate(list, content.TargetFrameContentContextual)
-        end
-    end
-    AddTargetFrameHookCandidate(list, _G.TargetFramePortrait)
-    AddTargetFrameHookCandidate(list, _G.TargetFrameTextureFrame)
-    return list
-end
-
-local function HookOneTargetFrame(frame)
-    if not ReadableFrame(frame) or hookedTargetFrames[frame] or not frame.HookScript then
-        return
-    end
+local function OnTargetFrameLeftEdge()
     if CombatLocked() then
-        pendingHooks[frame] = true
+        targetFrameClickAt = 0
+        targetFramePulseAt = 0
         return
     end
-    pendingHooks[frame] = nil
-    -- Never SetAttribute / re-parent / re-anchor TargetFrame. Hook listeners only.
-    local okDouble = pcall(frame.HookScript, frame, "OnDoubleClick", OnTargetFrameDoubleClick)
-    local okDown = pcall(frame.HookScript, frame, "OnMouseDown", OnTargetFrameMouseDown)
-    local okPost = pcall(frame.HookScript, frame, "PostClick", OnTargetFramePostClick)
-    if okDouble or okDown or okPost then
-        hookedTargetFrames[frame] = true
-        hookedFrames[frame] = true
+    if CursorOverTargetFrame() then
+        NoteTargetFrameLeftClick()
+    else
+        targetFrameClickAt = 0
     end
 end
 
-local function HookTargetFrameRadial()
-    local frames = CollectTargetFrameHookTargets()
+local function OnTargetFrameMonitorUpdate()
     if CombatLocked() then
-        for i = 1, #frames do
-            pendingHooks[frames[i]] = true
-        end
+        targetFrameLeftWasDown = false
         return
     end
-    for i = 1, #frames do
-        HookOneTargetFrame(frames[i])
+    local db = XMB.db
+    if not db or not db.flywheelUnits then
+        targetFrameLeftWasDown = false
+        return
+    end
+    local down = false
+    if type(IsMouseButtonDown) == "function" then
+        local ok, value = pcall(IsMouseButtonDown, "LeftButton")
+        down = ok and value and true or false
+    end
+    if down and not targetFrameLeftWasDown then
+        OnTargetFrameLeftEdge()
+    end
+    targetFrameLeftWasDown = down
+end
+
+local function StopTargetFrameMonitor()
+    targetFrameMonitor:SetScript("OnUpdate", nil)
+    targetFrameLeftWasDown = false
+end
+
+local function StartTargetFrameMonitor()
+    -- OnUpdate IsMouseButtonDown edge detection. GLOBAL_MOUSE_DOWN also feeds the
+    -- same NoteTargetFrameLeftClick path; SAME_CLICK coalesces duplicate edges.
+    if targetFrameMonitor:GetScript("OnUpdate") then
+        return
+    end
+    targetFrameMonitor:SetScript("OnUpdate", OnTargetFrameMonitorUpdate)
+end
+
+function XMB:UpdateTargetFrameMonitor()
+    local db = self.db
+    if db and db.flywheelUnits and not CombatLocked() then
+        StartTargetFrameMonitor()
+    else
+        StopTargetFrameMonitor()
+        targetFrameClickAt = 0
+        targetFramePulseAt = 0
     end
 end
 
 local function HookUnitClick(_frame)
-    -- Do not HookScript party/raid/nameplate Blizzard frames: that taints their click path.
-    -- SecureUnitButton_OnClick / SecureUnitButtonMixin hooks below cover those.
-    -- TargetFrame / portrait use HookTargetFrameRadial instead.
+    -- Do not HookScript Blizzard unit frames (especially TargetFrame): that taints UnitPopup.
+    -- SecureUnitButton_OnClick / SecureUnitButtonMixin hooks cover other unit frames.
+    -- TargetFrame double-click uses global mouse monitoring only.
     return
 end
 
@@ -1190,18 +1246,17 @@ local function FlushUnitHooks()
     if CombatLocked() then
         return
     end
-    HookTargetFrameRadial()
     for frame in pairs(pendingHooks) do
-        HookOneTargetFrame(frame)
         pendingHooks[frame] = nil
     end
+    XMB:UpdateTargetFrameMonitor()
 end
 
 local function HookStaticUnitFrames()
-    HookTargetFrameRadial()
     for i = 1, #STATIC_UNIT_FRAMES do
         HookUnitClick(_G[STATIC_UNIT_FRAMES[i]])
     end
+    XMB:UpdateTargetFrameMonitor()
 end
 
 local function HookNameplate(unit)
@@ -1577,6 +1632,10 @@ end
 XMB.BindSpokePostClick = BindSpokePostClick
 
 local function HandleUnitButtonClick(frame)
+    -- TargetFrame is owned by the global mouse monitor so UnitPopup stays untainted.
+    if IsUnderTargetFrame(frame) then
+        return
+    end
     local unit = UnitFromFrame(frame)
     if UnitIsReal(unit) then
         XMB:NoteFlywheelClick("unit", unit)
@@ -1663,6 +1722,9 @@ watcher:RegisterEvent("PLAYER_REGEN_DISABLED")
 watcher:RegisterEvent("PLAYER_REGEN_ENABLED")
 watcher:RegisterEvent("PLAYER_TARGET_CHANGED")
 pcall(watcher.RegisterEvent, watcher, "NAME_PLATE_UNIT_ADDED")
+-- GLOBAL_MOUSE_DOWN detects TargetFrame left double-clicks without HookScript on TargetFrame.
+pcall(watcher.RegisterEvent, watcher, "GLOBAL_MOUSE_DOWN")
+targetFrameUsesGlobalMouse = true
 local hookedCompact = CompactUnitFrame_SetUnit and true or false
 local selfLoaded = false
 
@@ -1689,6 +1751,7 @@ watcher:SetScript("OnEvent", function(_, event, arg1)
         lastClick.kind = nil
         targetFrameClickAt = 0
         targetFramePulseAt = 0
+        StopTargetFrameMonitor()
         XMB:CloseFlywheel()
     elseif event == "PLAYER_TARGET_CHANGED" then
         if not UnitIsReal("target") then
@@ -1701,6 +1764,16 @@ watcher:SetScript("OnEvent", function(_, event, arg1)
         if XMB.flywheel and XMB.flywheel:IsShown() and XMB.flywheel:GetAttribute("mode") == "unit" then
             XMB:RefreshFlywheelPortrait()
         end
+    elseif event == "GLOBAL_MOUSE_DOWN" then
+        -- LeftButton only. RightButton is ignored so TargetFrame UnitPopup stays native.
+        if arg1 ~= "LeftButton" or CombatLocked() then
+            return
+        end
+        local db = XMB.db
+        if not db or not db.flywheelUnits then
+            return
+        end
+        OnTargetFrameLeftEdge()
     elseif event == "GLOBAL_MOUSE_UP" then
         if not (XMB.flywheel and XMB.flywheel:IsShown()) or CombatLocked() then
             return
@@ -1714,6 +1787,7 @@ watcher:SetScript("OnEvent", function(_, event, arg1)
     elseif event == "PLAYER_REGEN_DISABLED" then
         -- Hide the radial wheel immediately when combat starts (state driver also hides it).
         XMB:ForceCloseFlywheel()
+        StopTargetFrameMonitor()
         if XMB.markUnit and XMB.markUnit ~= "target" then
             XMB:UseMarkUnit("target")
         end
@@ -1726,6 +1800,5 @@ watcher:SetScript("OnEvent", function(_, event, arg1)
             XMB:ApplyFlywheelSettings()
         end
         FlushUnitHooks()
-        HookTargetFrameRadial()
     end
 end)

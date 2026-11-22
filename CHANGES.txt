@@ -1,8 +1,8 @@
-Xius Marks Bar v1.4.1
+Xius Marks Bar v1.4.2
 
-Release 1.4.1: Restore target frame / portrait double-click for the mark wheel.
+Release 1.4.2: Restore TargetFrame right-click UnitPopup without breaking the mark wheel.
 
-Compared to 1.4:
-- Double-click TargetFrame or its portrait out of combat opens the radial target-mark menu.
-- OnDoubleClick plus a 0.35s OnMouseDown/PostClick fallback for SecureUnitButtonTemplate.
-- Wheel stays cursor-centered and hides when combat starts.
+Compared to 1.4.1:
+- Removed HookScript on TargetFrame (it tainted the Forever/Retail unit dropdown).
+- Left double-click uses GLOBAL_MOUSE_DOWN / IsMouseButtonDown monitoring instead.
+- Right-click Whisper, Inspect, Trade, Set Focus, and Raid Target Icon work again.

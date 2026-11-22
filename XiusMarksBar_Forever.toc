@@ -3,7 +3,7 @@
 ## Title: |cffd4a85aXius|r |cffffe066Marks Bar|r
 ## Notes: Compact raid marking bar for World of Warcraft Forever. Click the flag or the star to expand. /xmb
 ## Author: Xius
-## Version: 1.4.1
+## Version: 1.4.2
 ## IconTexture: Interface\TargetingFrame\UI-RaidTargetingIcon_1
 ## LoadSavedVariablesFirst: 1
 ## SavedVariables: XiusMarksBarDB
